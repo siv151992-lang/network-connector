@@ -243,6 +243,11 @@ Authentication: **U** = user session cookie (+ `X-CSRF-Token` on mutations),
 | GET | `/api/v1/version` | — | 2 |
 
 ### Authentication (Phase 3)
+Self-registration is **off by default** (`WIREMESH_ALLOW_REGISTRATION=false`). The first
+admin is created on the server with `wiremesh-server create-admin`, so nobody on the
+internet can race you to it. Further accounts come from `POST /admin/users`. Full
+request/response details: [API.md](API.md).
+
 | Method | Path | Auth |
 |---|---|---|
 | POST | `/api/v1/auth/register` | — |
@@ -279,7 +284,8 @@ Authentication: **U** = user session cookie (+ `X-CSRF-Token` on mutations),
 | Method | Path | Auth |
 |---|---|---|
 | POST | `/api/v1/device/register` | auth key in body, or U (interactive login) |
-| POST | `/api/v1/device/login/start` → `/poll` | — (device-code flow for headless/TV/CLI) |
+| POST | `/api/v1/device/login/start` → `/poll` | — (device-code flow for headless/TV/CLI; Phase 9) |
+| GET | `/api/v1/device/self` | D |
 | GET (WS) | `/api/v1/device/stream` | D |
 | POST | `/api/v1/device/rotate-key` | D |
 | POST | `/api/v1/device/relay-token` | D |
@@ -324,9 +330,9 @@ wiremesh/
 │   │   └── middleware/          # request id, logging, recover, rate limit, CORS, headers
 │   ├── secretbox/               # AES-256-GCM for columns at rest     (Phase 2)
 │   ├── version/
-│   ├── auth/                    # passwords, sessions, TOTP, email    (Phase 3)
-│   ├── devices/                 # registration, approval, credentials (Phase 3)
-│   ├── ipam/                    # address allocator                   (Phase 4)
+│   ├── auth/                    # passwords, tokens, TOTP, email      (Phase 3)
+│   ├── devices/                 # enrollment, naming, credentials     (Phase 3)
+│   ├── ipam/                    # address allocator                   (Phase 3)
 │   ├── acl/                     # policy parse/validate/compile       (Phase 4)
 │   ├── coord/                   # netmap builder, stream hub, presence (Phase 5)
 │   └── relayadmin/              # relay registry, relay tokens        (Phase 6)

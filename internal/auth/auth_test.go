@@ -54,13 +54,13 @@ func TestHasherRespectsContext(t *testing.T) {
 
 func TestValidatePassword(t *testing.T) {
 	cases := map[string]bool{
-		"short":                    false,
-		"aaaaaaaaaaaa":             false,
-		"password1234":             false,
-		"alice-secret-pass":        false, // contains email local part
-		"correct horse battery":    true,
-		strings.Repeat("x", 129):   false,
-		"Ünïcödé pässwörd ok":      true,
+		"short":                  false,
+		"aaaaaaaaaaaa":           false,
+		"password1234":           false,
+		"alice-secret-pass":      false, // contains email local part
+		"correct horse battery":  true,
+		strings.Repeat("x", 129): false,
+		"Ünïcödé pässwörd ok":    true,
 	}
 	for pw, ok := range cases {
 		if got := ValidatePassword(pw, "alice@example.com") == ""; got != ok {

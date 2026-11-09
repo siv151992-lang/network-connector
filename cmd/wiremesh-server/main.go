@@ -5,6 +5,8 @@
 //	wiremesh-server serve            # run migrations (if WIREMESH_AUTO_MIGRATE) and serve HTTP
 //	wiremesh-server migrate up       # apply pending migrations and exit
 //	wiremesh-server migrate status   # list applied and pending migrations
+//	wiremesh-server create-admin --email you@example.com [--name "Your Name"]
+//	                                 # password from WIREMESH_ADMIN_PASSWORD or stdin
 //	wiremesh-server version
 //
 // All configuration comes from WIREMESH_* environment variables; see .env.example.
@@ -26,9 +28,11 @@ import (
 
 	"github.com/siv151992-lang/network-connector/internal/api"
 	"github.com/siv151992-lang/network-connector/internal/api/middleware"
+	"github.com/siv151992-lang/network-connector/internal/auth"
 	"github.com/siv151992-lang/network-connector/internal/config"
 	"github.com/siv151992-lang/network-connector/internal/db"
 	"github.com/siv151992-lang/network-connector/internal/logging"
+	"github.com/siv151992-lang/network-connector/internal/secretbox"
 	"github.com/siv151992-lang/network-connector/internal/store"
 	"github.com/siv151992-lang/network-connector/internal/version"
 )
@@ -50,12 +54,12 @@ func run(args []string) error {
 		v := version.Get()
 		fmt.Printf("wiremesh-server %s (commit %s, built %s, %s)\n", v.Version, v.Commit, v.BuildDate, v.GoVersion)
 		return nil
-	case "serve", "migrate":
+	case "serve", "migrate", "create-admin":
 	case "help", "-h", "--help":
-		fmt.Println("usage: wiremesh-server [serve | migrate up | migrate status | version]")
+		fmt.Println("usage: wiremesh-server [serve | migrate up | migrate status | create-admin --email E [--name N] | version]")
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q (try: serve, migrate up, migrate status, version)", cmd)
+		return fmt.Errorf("unknown command %q (try: serve, migrate up, migrate status, create-admin, version)", cmd)
 	}
 
 	cfg, err := config.Load()
@@ -82,6 +86,9 @@ func run(args []string) error {
 			sub = args[1]
 		}
 		return runMigrate(ctx, pool, log, sub)
+	}
+	if cmd == "create-admin" {
+		return createAdmin(ctx, cfg, pool, args[1:])
 	}
 	return serve(ctx, cfg, log, pool)
 }
@@ -133,11 +140,28 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, pool *pgxp
 		log.Warn("WIREMESH_SECRET_KEY not set: using an ephemeral key; encrypted data (e.g. TOTP secrets) will be unreadable after restart")
 	}
 
+	box, err := secretbox.New(cfg.SecretKey)
+	if err != nil {
+		return err
+	}
+	mailer, err := newMailer(cfg, log)
+	if err != nil {
+		return err
+	}
+	defer mailer.Close() // drains queued email on shutdown
+
 	limiter := middleware.NewLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst)
 	defer limiter.Stop()
+	authLimiter := middleware.NewLimiter(cfg.AuthRateLimitPerMin/60, int(cfg.AuthRateLimitPerMin))
+	defer authLimiter.Stop()
+
+	st := store.New(pool)
+	go janitor(ctx, st, log)
 
 	handler := api.NewHandler(api.Deps{
-		Config: cfg, Log: log, Store: store.New(pool), DB: pool, Limiter: limiter,
+		Config: cfg, Log: log, Store: st, DB: pool, Limiter: limiter, AuthLimiter: authLimiter,
+		Hasher: auth.NewHasher(auth.DefaultArgon2Params, cfg.MaxConcurrentHashes),
+		Mailer: mailer, Box: box,
 	})
 
 	srv := &http.Server{

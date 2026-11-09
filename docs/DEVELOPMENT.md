@@ -24,6 +24,19 @@ curl -s localhost:8080/api/v1/version
 curl -si localhost:8080/api/v1/nope     # JSON 404 with X-Request-ID
 ```
 
+## Phase 3: accounts and device enrollment
+
+```bash
+make build
+export WIREMESH_DATABASE_URL="postgres://wiremesh:wiremesh@localhost:5432/wiremesh?sslmode=disable"
+./bin/wiremesh-server create-admin --email you@example.com   # prompts for a password
+make run
+```
+Then follow the curl walkthrough in [API.md](API.md): sign in, create a
+network, create an auth key and enroll a device with real WireGuard public keys
+(`wg genkey | wg pubkey`). Without SMTP in development, verification and reset
+emails, links included, are printed to the server log.
+
 ### What the tests cover
 | Package | Kind | Covers |
 |---|---|---|
@@ -33,6 +46,10 @@ curl -si localhost:8080/api/v1/nope     # JSON 404 with X-Request-ID
 | `internal/api/middleware` | unit | X-Forwarded-For spoofing resistance, request IDs, panic recovery, CORS allow-list, body limit, token-bucket limiter with IPv6 /64 bucketing |
 | `internal/api` | unit | health/readiness/version/404 over a real HTTP server |
 | `internal/db` | unit + integration | migration naming, idempotency, 4 concurrent migrators, checksum tampering |
+| `internal/auth` | unit | Argon2id hash/verify/rehash, malicious-parameter rejection, password policy, token prefixes, CSRF HMAC, RFC 6238 vectors, TOTP skew and replay, email header injection |
+| `internal/ipam` | unit | lowest-free allocation, reuse after release, exhaustion, IPv4→IPv6 mapping, ULA generation |
+| `internal/devices` | unit + integration | name sanitizing/dedup, key parsing, session and auth-key enrollment, single-use keys not burned by failed registrations, expired keys, **20 concurrent registrations get distinct IPs and names** |
+| `internal/api` (E2E) | integration | full HTTP flows over a real server and database: registration + verification, enumeration-safe sign-up, CSRF and Origin checks, TOTP enable/login/replay/disable, password reset and change revoking sessions, lockout, auth rate limit, admin user management, network RBAC (owner/admin/member/auditor/outsider), auth keys, device enrollment, approval, rotation, revocation, ephemeral logout, member removal deleting devices, audit trail |
 | `internal/store` | integration | users (case-insensitive email, lockout), sessions (revocation scoping), networks (last-owner protection incl. concurrent race), devices (uniqueness of IP/name/key, status state machine, revocation clears credential, cross-network isolation), audit (keyset pagination) |
 
 Integration tests need a role that can `CREATE DATABASE`. Each test creates
@@ -92,7 +109,13 @@ nano .env                              # set WIREMESH_DOMAIN and ACME_EMAIL
 chmod 600 .env
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 curl -s https://vpn.example.com/readyz
+
+# Create the first administrator (registration is closed by default)
+docker compose -f deploy/docker-compose.yml exec server \
+  wiremesh-server create-admin --email you@example.com
 ```
+Configure SMTP in `.env` (`WIREMESH_SMTP_*`) before inviting users:
+production refuses to start with email verification on and no SMTP server.
 
 ### 4. TLS
 Caddy gets and renews Let's Encrypt certificates automatically for
