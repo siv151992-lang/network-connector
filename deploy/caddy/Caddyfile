@@ -1,0 +1,30 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$WIREMESH_DOMAIN} {
+	encode zstd gzip
+
+	# API, device control plane (incl. WebSocket upgrades) and probes.
+	@backend path /api/* /healthz /readyz
+	handle @backend {
+		reverse_proxy server:8080 {
+			header_up X-Request-ID {http.request.uuid}
+		}
+	}
+
+	# Phase 10: dashboard static files go here.
+	handle {
+		respond "WireMesh control server. The dashboard arrives in Phase 10." 200
+	}
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
