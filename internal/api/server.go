@@ -97,6 +97,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 		s.networkRoutes(mux)
 		s.deviceRoutes(mux)
 		s.adminRoutes(mux)
+		s.aclRoutes(mux)
 	}
 
 	// JSON 404 for everything else.

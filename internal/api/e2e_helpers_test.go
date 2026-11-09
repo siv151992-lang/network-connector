@@ -122,6 +122,14 @@ type client struct {
 	csrf   string
 	bearer string
 	origin string
+	extra  map[string]string
+}
+
+// withHeader returns a copy of the client that sends one extra header.
+func (c *client) withHeader(k, v string) *client {
+	cp := *c
+	cp.extra = map[string]string{k: v}
+	return &cp
 }
 
 func (e *env) client() *client {
@@ -201,6 +209,9 @@ func (c *client) do(method, path string, body any) resp {
 	}
 	if c.origin != "" {
 		req.Header.Set("Origin", c.origin)
+	}
+	for k, v := range c.extra {
+		req.Header.Set(k, v)
 	}
 	res, err := c.hc.Do(req)
 	if err != nil {

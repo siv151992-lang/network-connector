@@ -37,6 +37,29 @@ network, create an auth key and enroll a device with real WireGuard public keys
 (`wg genkey | wg pubkey`). Without SMTP in development, verification and reset
 emails, links included, are printed to the server log.
 
+## Phase 4: real tunnels
+
+```bash
+go build -o bin/wiremesh ./cmd/wiremesh
+# on each Linux machine (root; uses /dev/net/tun):
+sudo WIREMESH_AUTH_KEY=wmk_… ./bin/wiremesh up --server https://vpn.example.com --iface wm0
+sudo ./bin/wiremesh status        # peers, endpoints, last handshake, rx/tx
+```
+
+* State (private keys + credential) lives in `/var/lib/wiremesh/state.json`
+  with mode 0600. The client refuses to start if other users can read it.
+* WireGuard listens on UDP **51820** (`--port`). Allow it in the firewall of
+  machines that should accept direct connections.
+* `wg show` works too, because the client serves WireGuard's standard UAPI socket.
+* Until Phase 5 (NAT traversal), devices must reach each other's reported
+  addresses directly: the same LAN, or one side with a public IP.
+
+**Full tunnel test** (root, Linux, PostgreSQL), using real namespaces, real
+WireGuard and real ACL enforcement:
+```bash
+sudo make test-netns TEST_DB=postgres://postgres:secret@localhost:5432/postgres
+```
+
 ### What the tests cover
 | Package | Kind | Covers |
 |---|---|---|
@@ -50,6 +73,11 @@ emails, links included, are printed to the server log.
 | `internal/ipam` | unit | lowest-free allocation, reuse after release, exhaustion, IPv4→IPv6 mapping, ULA generation |
 | `internal/devices` | unit + integration | name sanitizing/dedup, key parsing, session and auth-key enrollment, single-use keys not burned by failed registrations, expired keys, **20 concurrent registrations get distinct IPs and names** |
 | `internal/api` (E2E) | integration | full HTTP flows over a real server and database: registration + verification, enumeration-safe sign-up, CSRF and Origin checks, TOTP enable/login/replay/disable, password reset and change revoking sessions, lockout, auth rate limit, admin user management, network RBAC (owner/admin/member/auditor/outsider), auth keys, device enrollment, approval, rotation, revocation, ephemeral logout, member removal deleting devices, audit trail |
+| `internal/acl` | unit | validation (every error reported), identity semantics (users, groups, tags, `autogroup:self`/`member`/`tagged`), peer visibility, filter compilation, ports/protocols (port rules never open ICMP), IPv4+IPv6 |
+| `pkg/protocol` | unit | X25519 key derivation (RFC 7748 vector), JSON forms |
+| `pkg/client` | unit | IPv4/IPv6 parsing incl. extension headers and fragments, malformed packets, default deny, conntrack replies/expiry, atomic rule swap, incremental WireGuard peer diff, UAPI stats parsing, state file permissions |
+| `internal/api` netmap/ACL | integration | map contents and secrecy, ETag/304, endpoint validation, ACL versioning and validation, test endpoint and draft policies, pending/expired devices, key rotation restoring peers |
+| `scripts/netns-e2e.sh` | system | two namespaces, real `wiremesh` clients: enroll, handshake, ping both ways, live policy push (TCP 8080 allowed, 8081 and ICMP blocked, replies tracked), revocation tears down the tunnel |
 | `internal/store` | integration | users (case-insensitive email, lockout), sessions (revocation scoping), networks (last-owner protection incl. concurrent race), devices (uniqueness of IP/name/key, status state machine, revocation clears credential, cross-network isolation), audit (keyset pagination) |
 
 Integration tests need a role that can `CREATE DATABASE`. Each test creates

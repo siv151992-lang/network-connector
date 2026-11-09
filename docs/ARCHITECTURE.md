@@ -160,6 +160,11 @@ and only ever sees WireGuard ciphertext. A frame is
 horizontally scalable; devices pick a home relay by lowest STUN RTT.
 
 ### 3.7 Real-time updates
+*Phase 4 status:* devices poll `GET /device/netmap` every 10 s with
+`If-None-Match`, so unchanged maps cost a `304`. The WebSocket stream below
+replaces polling in Phase 5. WireGuard peers are updated incrementally (only
+changed peers are touched), so polling never disrupts established sessions.
+
 Each device holds one WebSocket (`/api/v1/device/stream`). The server sends a
 full `NetworkMap`, then deltas when peers join or leave, endpoints change, the
 policy changes, or a device is revoked. Presence (online/offline) comes from
@@ -334,7 +339,7 @@ wiremesh/
 │   ├── devices/                 # enrollment, naming, credentials     (Phase 3)
 │   ├── ipam/                    # address allocator                   (Phase 3)
 │   ├── acl/                     # policy parse/validate/compile       (Phase 4)
-│   ├── coord/                   # netmap builder, stream hub, presence (Phase 5)
+│   ├── coord/                   # netmap builder (Phase 4); stream hub, presence (Phase 5)
 │   └── relayadmin/              # relay registry, relay tokens        (Phase 6)
 ├── pkg/                         # shared by server and clients
 │   ├── protocol/                # wire types: NetworkMap, Peer, stream msgs (Phase 4)

@@ -111,9 +111,22 @@ minutes. Responses during lockout look like a wrong password.
 | `POST /device/rotate-key` | device | `{node_key, disco_key}`; approved devices only; renews key expiry |
 | `POST /device/logout` | device | clears the credential (ephemeral devices are deleted) |
 
+| `GET /device/netmap` | device | the compiled network map: `{version, network, self, peers[], packet_filter[], poll_interval}`. Send `If-None-Match: "<version>"` to get `304` when nothing changed. `403 device_not_approved` while pending. |
+| `POST /device/endpoints` | device | `{endpoints: ["192.0.2.1:51820", …], listen_port}`: where peers can reach this device (max 16; loopback, link-local, multicast rejected) |
+
 Planned: `GET /device/stream` (WebSocket network map, Phase 5),
 `POST /device/relay-token` (Phase 6), and the device-code login flow for
 headless clients (Phase 9).
+
+## Access control
+
+Details and policy syntax: [ACL.md](ACL.md).
+
+| Method & path | Role | Notes |
+|---|---|---|
+| `GET /networks/{nid}/acl` | member | `{policy, version, is_default}` |
+| `PUT /networks/{nid}/acl` | admin | `{version, policy}`; `version` must equal the stored one (`409 stale_version` otherwise); `422 invalid_policy` lists every problem |
+| `POST /networks/{nid}/acl/test` | admin, auditor | `{src, dst, proto?, port?, policy?}`: src/dst are device names, ids or addresses; an optional draft `policy` is evaluated without saving → `{allowed}` |
 
 ## System administration
 
