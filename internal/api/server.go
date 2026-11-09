@@ -12,6 +12,7 @@ import (
 	"github.com/siv151992-lang/network-connector/internal/api/middleware"
 	"github.com/siv151992-lang/network-connector/internal/auth"
 	"github.com/siv151992-lang/network-connector/internal/config"
+	"github.com/siv151992-lang/network-connector/internal/coord"
 	"github.com/siv151992-lang/network-connector/internal/devices"
 	"github.com/siv151992-lang/network-connector/internal/secretbox"
 	"github.com/siv151992-lang/network-connector/internal/store"
@@ -35,6 +36,7 @@ type Deps struct {
 	Mailer      auth.Mailer
 	Box         *secretbox.Box // encrypts TOTP secrets at rest
 	Now         func() time.Time
+	Hub         *coord.Hub // created if nil
 }
 
 // Server holds dependencies shared by handlers.
@@ -48,6 +50,8 @@ type Server struct {
 	mailer    auth.Mailer
 	box       *secretbox.Box
 	registrar *devices.Registrar
+	builder   *coord.Builder
+	hub       *coord.Hub
 	now       func() time.Time
 }
 
@@ -70,6 +74,11 @@ func NewHandler(d Deps) http.Handler {
 	}
 	if d.Store != nil {
 		s.registrar = &devices.Registrar{Store: d.Store, Now: s.now}
+		s.hub = d.Hub
+		if s.hub == nil {
+			s.hub = NewHub(d.Store, d.Config, d.Log, s.now)
+		}
+		s.builder = s.hub.B
 	}
 	mux := http.NewServeMux()
 	s.routes(mux)
@@ -164,4 +173,13 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, version.Get())
+}
+
+// NewHub builds the map builder and stream hub for a server. main creates it
+// itself so it can close all streams on shutdown.
+func NewHub(st *store.Store, cfg *config.Config, log *slog.Logger, now func() time.Time) *coord.Hub {
+	if now == nil {
+		now = time.Now
+	}
+	return coord.NewHub(&coord.Builder{Store: st, Now: now, STUNServers: cfg.STUNServers}, log)
 }

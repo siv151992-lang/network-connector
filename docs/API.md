@@ -114,9 +114,28 @@ minutes. Responses during lockout look like a wrong password.
 | `GET /device/netmap` | device | the compiled network map: `{version, network, self, peers[], packet_filter[], poll_interval}`. Send `If-None-Match: "<version>"` to get `304` when nothing changed. `403 device_not_approved` while pending. |
 | `POST /device/endpoints` | device | `{endpoints: ["192.0.2.1:51820", …], listen_port}`: where peers can reach this device (max 16; loopback, link-local, multicast rejected) |
 
-Planned: `GET /device/stream` (WebSocket network map, Phase 5),
+| `GET /device/stream` | device | WebSocket control stream, see below |
+
+Planned: (WebSocket network map, Phase 5),
 `POST /device/relay-token` (Phase 6), and the device-code login flow for
 headless clients (Phase 9).
+
+### Control stream
+
+`GET /api/v1/device/stream` with `Authorization: Bearer wmd_…` upgrades to a
+WebSocket (`403 device_not_approved` while pending). Frames are JSON:
+
+| Direction | `type` | Body |
+|---|---|---|
+| server → device | `map` | `{"map": NetworkMap}`: on connect and on every change (devices joining or leaving, approval, presence, endpoints, ACL, settings) |
+| server → device | `call_me_maybe` | `{"call_me_maybe": {"from": <peer node key>, "endpoints": [...], "quiesce": bool}}`: probe this peer now. `from` is set by the server from the authenticated sender. Forwarded only between devices the ACL lets see each other |
+| server → device | `revoked` | the credential was revoked; the device must shut down |
+| device → server | `endpoints` | `{"endpoints": {"endpoints": [...], "listen_port": n}}` |
+| device → server | `call_me_maybe` | `{"call_me_maybe": {"to": <peer node key>, "endpoints": [...], "quiesce": bool}}` (rate-limited) |
+
+The server pings every 30 s, and holding the stream is what makes a device
+`online` (also shown on `GET …/devices`). Devices fall back to reconnecting
+with exponential backoff, and the tunnel keeps running on the last map.
 
 ## Access control
 

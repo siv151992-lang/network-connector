@@ -30,6 +30,10 @@ var ErrNotApproved = errors.New("device is not approved")
 type Builder struct {
 	Store *store.Store
 	Now   func() time.Time
+	// STUNServers are advertised to devices for endpoint discovery.
+	STUNServers []string
+	// Online reports live presence (set by the Hub); nil means unknown/offline.
+	Online func(uuid.UUID) bool
 }
 
 // Policy returns the compiled policy for a network (the stored one, or the
@@ -107,6 +111,7 @@ func (b *Builder) Build(ctx context.Context, self *store.Device) (*protocol.Netw
 		Peers:        []protocol.Node{},
 		PacketFilter: []protocol.FilterRule{},
 		PollInterval: protocol.Duration(PollInterval),
+		STUNServers:  b.STUNServers,
 	}
 	if self.KeyExpiresAt != nil && !b.Now().Before(*self.KeyExpiresAt) {
 		// An expired device gets no peers until it rotates its key.
@@ -114,7 +119,11 @@ func (b *Builder) Build(ctx context.Context, self *store.Device) (*protocol.Netw
 	} else {
 		me := ToACL(self, emails[self.UserID])
 		for _, p := range policy.Peers(me, all) {
-			nm.Peers = append(nm.Peers, toNode(byID[p.ID], emails[byID[p.ID].UserID]))
+			node := toNode(byID[p.ID], emails[byID[p.ID].UserID])
+			if b.Online != nil {
+				node.Online = b.Online(byID[p.ID].ID)
+			}
+			nm.Peers = append(nm.Peers, node)
 		}
 		nm.PacketFilter = policy.Filter(me, all)
 		if nm.PacketFilter == nil {

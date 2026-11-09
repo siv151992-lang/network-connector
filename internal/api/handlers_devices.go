@@ -70,6 +70,9 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request, n *ne
 	if err != nil {
 		return err
 	}
+	for _, d := range list {
+		d.Online = s.hub.Online(d.ID)
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"devices": list})
 	return nil
 }
@@ -79,6 +82,7 @@ func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request, n *netC
 	if err != nil {
 		return err
 	}
+	d.Online = s.hub.Online(d.ID)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"device": d})
 	return nil
 }
@@ -138,6 +142,7 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request, n *n
 		}
 		s.netAudit(r, n, "device.tags", "device", d.ID.String(), map[string]any{"tags": d.Tags})
 	}
+	s.notify(n.Network.ID)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"device": d})
 	return nil
 }
@@ -153,6 +158,8 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request, n *n
 	if err := s.store.DeleteDevice(r.Context(), n.Network.ID, d.ID); err != nil {
 		return err
 	}
+	s.kick(d.ID, true)
+	s.notify(n.Network.ID)
 	s.netAudit(r, n, "device.delete", "device", d.ID.String(), map[string]any{"name": d.Name, "ipv4": d.IPv4.String()})
 	w.WriteHeader(http.StatusNoContent)
 	return nil
@@ -179,6 +186,10 @@ func (s *Server) deviceStatus(to string) netFunc {
 		if err != nil {
 			return err
 		}
+		if to == store.DeviceStatusRevoked {
+			s.kick(d.ID, true)
+		}
+		s.notify(n.Network.ID)
 		s.netAudit(r, n, statusAction[to], "device", d.ID.String(),
 			map[string]any{"from": d.Status, "to": to, "name": d.Name})
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"device": updated})
@@ -288,6 +299,7 @@ func (s *Server) handleDeviceRegister(w http.ResponseWriter, r *http.Request) er
 		return err
 	}
 	d := res.Device
+	s.notify(d.NetworkID)
 	s.audit(r, store.NewAuditEntry{NetworkID: &d.NetworkID, ActorUserID: actor, ActorDeviceID: &d.ID, Action: "device.register",
 		TargetType: "device", TargetID: d.ID.String(), Metadata: map[string]any{
 			"name": d.Name, "os": d.OS, "status": d.Status, "ipv4": d.IPv4.String(), "via_auth_key": res.AuthKeyID != nil}})
@@ -379,6 +391,7 @@ func (s *Server) handleDeviceRotateKey(w http.ResponseWriter, r *http.Request, d
 		}
 		return err
 	}
+	s.notify(d.NetworkID)
 	s.audit(r, store.NewAuditEntry{NetworkID: &d.NetworkID, ActorDeviceID: &d.ID, Action: "device.rotate_key", TargetType: "device", TargetID: d.ID.String()})
 	updated, err := s.store.GetDevice(r.Context(), d.NetworkID, d.ID)
 	if err != nil {
@@ -400,6 +413,8 @@ func (s *Server) handleDeviceLogout(w http.ResponseWriter, r *http.Request, d *s
 	if err != nil {
 		return err
 	}
+	s.kick(d.ID, true)
+	s.notify(d.NetworkID)
 	actor := &d.ID
 	if d.Ephemeral {
 		actor = nil // the row is gone; the audit FK must not point at it

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"os"
@@ -56,6 +57,9 @@ type Config struct {
 	SMTPPassword string
 	SMTPFrom     string
 	SMTPTLS      string // starttls | tls | none
+
+	// STUN servers (host:port) advertised to devices for NAT traversal.
+	STUNServers []string
 }
 
 // IsProduction reports whether the server runs in production mode.
@@ -96,6 +100,7 @@ func LoadFrom(lookup func(string) (string, bool)) (*Config, error) {
 		SMTPPassword: g.str("WIREMESH_SMTP_PASSWORD", ""),
 		SMTPFrom:     g.str("WIREMESH_SMTP_FROM", ""),
 		SMTPTLS:      strings.ToLower(g.str("WIREMESH_SMTP_TLS", "starttls")),
+		STUNServers:  g.list("WIREMESH_STUN_SERVERS"),
 	}
 
 	var errs []error
@@ -201,6 +206,13 @@ func LoadFrom(lookup func(string) (string, bool)) (*Config, error) {
 		ou, err := url.Parse(o)
 		if err != nil || ou.Scheme == "" || ou.Host == "" || ou.Path != "" {
 			errs = append(errs, fmt.Errorf("WIREMESH_CORS_ORIGINS entry %q must be an origin like https://admin.example.com", o))
+		}
+	}
+
+	for _, s := range c.STUNServers {
+		host, port, err := net.SplitHostPort(s)
+		if p, perr := strconv.Atoi(port); err != nil || host == "" || perr != nil || p < 1 || p > 65535 {
+			errs = append(errs, fmt.Errorf("WIREMESH_STUN_SERVERS entry %q must be host:port", s))
 		}
 	}
 

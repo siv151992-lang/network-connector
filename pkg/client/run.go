@@ -5,12 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/netip"
 	"os"
 	"runtime"
 	"slices"
-	"sort"
 	"time"
 
 	"github.com/siv151992-lang/network-connector/pkg/protocol"
@@ -84,73 +82,145 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 
-	eng, err := NewEngine(EngineConfig{InterfaceName: o.InterfaceName, PrivateKey: st.NodePrivate, ListenPort: o.ListenPort, Log: log})
+	eng, err := NewEngine(EngineConfig{InterfaceName: o.InterfaceName, PrivateKey: st.NodePrivate,
+		DiscoPrivate: st.DiscoPrivate, ListenPort: o.ListenPort, Log: log})
 	if err != nil {
 		return err
 	}
 	defer eng.Close()
-
-	var lastEndpoints []netip.AddrPort
-	var applied *protocol.NetworkMap
-	version := ""
-	for {
-		// Report endpoints whenever local addresses change (e.g. Wi-Fi -> LTE).
-		eps := LocalEndpoints(eng.ListenPort(), eng.Name())
-		if !slices.Equal(eps, lastEndpoints) {
-			if err := ctl.ReportEndpoints(ctx, protocol.EndpointsUpdate{Endpoints: eps, ListenPort: eng.ListenPort()}); err != nil {
-				if errors.Is(err, ErrUnauthorized) {
-					return err
-				}
-				log.Warn("reporting endpoints failed", "error", err)
-			} else {
-				lastEndpoints = eps
-				log.Info("reported endpoints", "endpoints", fmt.Sprint(eps))
-				version = "" // our own endpoints changed: refetch so peers' view is current
-			}
+	apply := func(m *protocol.NetworkMap) {
+		if err := eng.Apply(m); err != nil {
+			log.Error("applying network map failed", "error", err)
+			return
 		}
-
-		if nm != nil {
-			if err := eng.Apply(nm); err != nil {
-				log.Error("applying network map failed", "error", err)
-			} else {
-				version = nm.Version
-				applied = nm
-				if o.OnMap != nil {
-					o.OnMap(nm)
-				}
-			}
+		if o.OnMap != nil {
+			o.OnMap(m)
 		}
+	}
+	apply(nm)
 
-		interval := 10 * time.Second
-		if nm != nil && nm.PollInterval > 0 {
-			interval = time.Duration(nm.PollInterval)
-		}
+	// Endpoint changes (STUN, interface changes) wake the stream loop.
+	epChanged := make(chan struct{}, 1)
+	eng.Magic().OnEndpointsChanged(func() {
 		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(interval):
+		case epChanged <- struct{}{}:
+		default:
 		}
+	})
 
-		next, err := ctl.Netmap(ctx, version)
+	backoff := time.Second
+	for {
+		err := runStream(ctx, ctl, eng, log, apply, epChanged)
 		switch {
+		case ctx.Err() != nil:
+			return nil
 		case errors.Is(err, ErrUnauthorized):
 			log.Error("device credential revoked; shutting tunnel down")
 			return err
 		case errors.Is(err, ErrNotApproved):
 			log.Warn("device no longer approved; removing all peers")
-			nm = nil
-			if applied != nil && len(applied.Peers) > 0 {
-				cleared := *applied // keep addresses and routes, drop peers and rules
-				cleared.Peers, cleared.PacketFilter, cleared.Version = nil, nil, ""
-				nm = &cleared
-			}
-		case err != nil:
-			log.Warn("fetching network map failed; keeping current config", "error", err)
-			nm = nil
-		default:
-			nm = next // nil when unchanged
+			cleared := *nm
+			cleared.Peers, cleared.PacketFilter = nil, nil
+			apply(&cleared)
+		}
+		// Keep the tunnel running with the last map while reconnecting.
+		log.Warn("control stream down; reconnecting", "error", err, "in", backoff)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(jitter(backoff)):
+		}
+		backoff = min(backoff*2, 30*time.Second)
+		if err == nil {
+			backoff = time.Second
 		}
 	}
+}
+
+func jitter(d time.Duration) time.Duration {
+	return d/2 + time.Duration(time.Now().UnixNano()%int64(d/2+1))
+}
+
+// runStream holds one control-stream session: receives maps and
+// call-me-maybe, reports endpoints, and relays our call-me-maybe requests.
+func runStream(ctx context.Context, ctl *Control, eng *Engine, log *slog.Logger,
+	apply func(*protocol.NetworkMap), epChanged <-chan struct{}) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	st, err := ctl.Stream(ctx)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	log.Info("control stream connected")
+
+	ms := eng.Magic()
+	ms.SetCallMeMaybeSender(func(to protocol.Key, eps []netip.AddrPort, quiesce bool) {
+		_ = st.Send(ctx, protocol.StreamMessage{Type: protocol.StreamCallMeMaybe,
+			CallMeMaybe: &protocol.CallMeMaybe{To: to, Endpoints: eps, Quiesce: quiesce}})
+	})
+	defer ms.SetCallMeMaybeSender(nil)
+
+	errc := make(chan error, 3)
+	go func() { errc <- st.KeepAlive(ctx, 25*time.Second) }()
+
+	// Writer: endpoint reports (now, and whenever they change).
+	go func() {
+		var last []netip.AddrPort
+		report := func() error {
+			eps := ms.Endpoints()
+			if slices.Equal(eps, last) {
+				return nil
+			}
+			if err := st.Send(ctx, protocol.StreamMessage{Type: protocol.StreamEndpoints,
+				Endpoints: &protocol.EndpointsUpdate{Endpoints: eps, ListenPort: eng.ListenPort()}}); err != nil {
+				return err
+			}
+			last = eps
+			log.Info("reported endpoints", "endpoints", fmt.Sprint(eps))
+			return nil
+		}
+		if err := report(); err != nil {
+			errc <- err
+			return
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-epChanged:
+				if err := report(); err != nil {
+					errc <- err
+					return
+				}
+			}
+		}
+	}()
+
+	// Reader.
+	go func() {
+		for {
+			m, err := st.Recv(ctx)
+			if err != nil {
+				errc <- err
+				return
+			}
+			switch m.Type {
+			case protocol.StreamMap:
+				if m.Map != nil {
+					apply(m.Map)
+				}
+			case protocol.StreamCallMeMaybe:
+				if m.CallMeMaybe != nil {
+					ms.HandleCallMeMaybe(m.CallMeMaybe.From, m.CallMeMaybe.Endpoints, m.CallMeMaybe.Quiesce)
+				}
+			case protocol.StreamRevoked:
+				errc <- ErrUnauthorized
+				return
+			}
+		}
+	}()
+	return <-errc
 }
 
 // waitForMap polls until the device is approved and returns its first map.
@@ -177,46 +247,4 @@ func waitForMap(ctx context.Context, ctl *Control, log *slog.Logger) (*protocol.
 		case <-time.After(5 * time.Second):
 		}
 	}
-}
-
-// LocalEndpoints lists this machine's usable unicast addresses with the
-// WireGuard port: the direct candidates peers on the same network can use.
-// Phase 5 adds the STUN-discovered public endpoint.
-func LocalEndpoints(port uint16, exclude string) []netip.AddrPort {
-	var out []netip.AddrPort
-	ifaces, err := net.Interfaces()
-	if err != nil || port == 0 {
-		return nil
-	}
-	for _, ifc := range ifaces {
-		if ifc.Name == exclude || ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, _ := ifc.Addrs()
-		for _, a := range addrs {
-			ipn, ok := a.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			ip, ok := netip.AddrFromSlice(ipn.IP)
-			if !ok {
-				continue
-			}
-			ip = ip.Unmap()
-			if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() {
-				continue
-			}
-			out = append(out, netip.AddrPortFrom(ip, port))
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Addr().Is4() != out[j].Addr().Is4() {
-			return out[i].Addr().Is4()
-		}
-		return out[i].String() < out[j].String()
-	})
-	if len(out) > 16 {
-		out = out[:16]
-	}
-	return out
 }

@@ -60,6 +60,32 @@ WireGuard and real ACL enforcement:
 sudo make test-netns TEST_DB=postgres://postgres:secret@localhost:5432/postgres
 ```
 
+## Phase 5: push stream and NAT traversal
+
+Devices now hold a WebSocket control stream (`GET /api/v1/device/stream`).
+Map changes, presence and call-me-maybe are pushed instantly, so polling is gone.
+To traverse NATs, the control server needs at least one STUN server:
+
+```bash
+go build -o bin/wiremesh-relay ./cmd/wiremesh-relay
+./bin/wiremesh-relay --stun-addr :3478                      # on a public host (UDP 3478 open)
+WIREMESH_STUN_SERVERS=vpn.example.com:3478 make run         # control server advertises it
+```
+
+`wiremesh status --json` shows each peer's live path (`endpoint`): a peer's
+NAT public address means a hole-punched direct connection.
+
+**NAT test** (root, Linux, PostgreSQL): two sites behind real `MASQUERADE`
+NATs, 4 router hops apart.
+```bash
+sudo WIREMESH_TEST_DATABASE_URL=postgres://postgres:secret@localhost:5432/postgres scripts/nat-e2e.sh
+```
+It checks hole punching, roaming (site A's public IP changes) and that a
+symmetric NAT correctly yields no direct path. Optional variables:
+`WIREMESH_TEST_LOGS=<dir>` keeps logs, `WIREMESH_TEST_CONNTRACK=1` dumps the
+routers' conntrack tables during roaming, and `WIREMESH_TEST_SKIP_CASE2=1`
+skips the symmetric-NAT case.
+
 ### What the tests cover
 | Package | Kind | Covers |
 |---|---|---|
@@ -77,6 +103,11 @@ sudo make test-netns TEST_DB=postgres://postgres:secret@localhost:5432/postgres
 | `pkg/protocol` | unit | X25519 key derivation (RFC 7748 vector), JSON forms |
 | `pkg/client` | unit | IPv4/IPv6 parsing incl. extension headers and fragments, malformed packets, default deny, conntrack replies/expiry, atomic rule swap, incremental WireGuard peer diff, UAPI stats parsing, state file permissions |
 | `internal/api` netmap/ACL | integration | map contents and secrecy, ETag/304, endpoint validation, ACL versioning and validation, test endpoint and draft policies, pending/expired devices, key rotation restoring peers |
+| `pkg/stun` | unit + fuzz | RFC 5769 test vector, round trips (v4/v6), malformed input, server counters |
+| `pkg/disco` | unit + fuzz | NaCl box seal/open, wrong key, tampering, truncation |
+| `pkg/client/magicsock` | integration | real wireguard-go devices over the magic socket: direct path discovery, one-sided candidates, call-me-maybe, unknown/foreign traffic dropped, path expiry |
+| `internal/api` stream | integration | WebSocket auth (401/403), push on join/approve/ACL change, presence, endpoints over the stream, call-me-maybe forwarding with server-stamped sender, ACL blocks forwarding, revocation message |
+| `scripts/nat-e2e.sh` | system | real NATs + STUN: hole punch through two `MASQUERADE` routers (~4 s), roaming recovery (~50-65 s), symmetric NAT yields no path |
 | `scripts/netns-e2e.sh` | system | two namespaces, real `wiremesh` clients: enroll, handshake, ping both ways, live policy push (TCP 8080 allowed, 8081 and ICMP blocked, replies tracked), revocation tears down the tunnel |
 | `internal/store` | integration | users (case-insensitive email, lockout), sessions (revocation scoping), networks (last-owner protection incl. concurrent race), devices (uniqueness of IP/name/key, status state machine, revocation clears credential, cross-network isolation), audit (keyset pagination) |
 
@@ -118,7 +149,7 @@ sudo ufw allow 80/tcp      # ACME HTTP-01 challenge + redirect
 sudo ufw allow 443/tcp     # dashboard, API, device control plane
 sudo ufw allow 443/udp     # HTTP/3
 # Phase 6 (relay):
-# sudo ufw allow 3478/udp  # STUN
+sudo ufw allow 3478/udp    # STUN (NAT traversal)
 # sudo ufw allow 8443/tcp  # relay
 sudo ufw enable
 ```

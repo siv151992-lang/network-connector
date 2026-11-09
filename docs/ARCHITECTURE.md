@@ -151,6 +151,29 @@ default-deny. The control server compiles it per device into:
    userspace engine. A compromised peer can't bypass it by editing its own
    config.
 
+### 3.5b NAT traversal (implemented in Phase 5, `pkg/client/magicsock`)
+* **One UDP socket** per address family carries WireGuard, disco and STUN, so
+  the public mapping STUN reports is the one WireGuard uses.
+* WireGuard peers are configured with **identity endpoints** (`wm:<node key>`).
+  The magicsock `Bind` picks the path for each packet. A path is only used once
+  an authenticated disco pong confirms it, and inbound WireGuard packets are
+  accepted only from verified addresses (private LAN addresses collide across
+  sites).
+* **Low-TTL hole punching.** On Linux NATs (most home routers), a probe that
+  reaches the peer's NAT before the peer has an outbound mapping makes
+  conntrack remap the peer's port, and the punch deadlocks. Verified
+  empirically; see `scripts/nat-e2e.sh` with `WIREMESH_TEST_CONNTRACK=1`.
+  Probes are therefore sent first with TTL 2-4 (they open our NAT but die
+  before the peer's), then a **call-me-maybe** via the control stream makes the
+  peer answer with normal packets.
+* **Synchronized quiescing.** After a path dies mid-flow (e.g. a public IP
+  change), stale packets can poison the NAT anyway. When 3 normal pings go
+  unanswered, a `quiesce` call-me-maybe makes both sides go silent for 32 s
+  (more than conntrack's 30 s), and both then retry with fresh state. Measured
+  roaming recovery is 50-65 s; the Phase 6 relay carries traffic meanwhile.
+* **Symmetric NATs** (random port per destination) can't be traversed this
+  way; those pairs will use the relay.
+
 ### 3.6 Relay protocol
 The relay is a custom protocol, not TURN. TURN allocates per-flow ports and
 needs UDP. Our relay runs over TLS on TCP 443/8443, so it passes restrictive

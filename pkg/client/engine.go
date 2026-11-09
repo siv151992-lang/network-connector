@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 
+	"github.com/siv151992-lang/network-connector/pkg/client/magicsock"
 	"github.com/siv151992-lang/network-connector/pkg/protocol"
 )
 
@@ -39,14 +39,15 @@ type OSConfigurator interface {
 type EngineConfig struct {
 	InterfaceName string // e.g. "wm0"
 	PrivateKey    protocol.PrivateKey
+	DiscoPrivate  protocol.PrivateKey
 	ListenPort    uint16 // 0 picks a random port
 	MTU           int
 	Log           *slog.Logger
 }
 
-// peerConfig is what we last told WireGuard about a peer.
+// peerConfig is what we last told WireGuard about a peer. The endpoint is
+// always the peer's identity (wm:<key>); magicsock picks the actual path.
 type peerConfig struct {
-	endpoint   netip.AddrPort
 	allowedIPs []netip.Prefix
 }
 
@@ -59,7 +60,7 @@ type Engine struct {
 	ifname string
 	osc    OSConfigurator
 	uapi   io.Closer
-	port   uint16 // the port we asked WireGuard to bind
+	ms     *magicsock.Conn
 
 	mu      sync.Mutex
 	peers   map[protocol.Key]peerConfig
@@ -78,7 +79,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		cfg.Log = slog.Default()
 	}
 	if cfg.ListenPort == 0 {
-		// Choose the random port ourselves so we always know it (see ListenPort).
+		// Choose the random port ourselves so it is known before binding.
 		var b [2]byte
 		_, _ = rand.Read(b[:])
 		cfg.ListenPort = 49152 + binary.BigEndian.Uint16(b[:])%16000
@@ -93,24 +94,28 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		return nil, err
 	}
 	e := &Engine{log: cfg.Log.With("iface", name), tun: tdev, Filter: NewFilter(), ifname: name,
-		peers: map[protocol.Key]peerConfig{}, stopped: make(chan struct{}), port: cfg.ListenPort}
+		peers: map[protocol.Key]peerConfig{}, stopped: make(chan struct{})}
+	e.ms = magicsock.New(magicsock.Options{Port: cfg.ListenPort, DiscoPrivate: cfg.DiscoPrivate,
+		NodeKey: cfg.PrivateKey.Public(), ExcludeIface: name, Log: e.log})
 
 	logger := &device.Logger{
 		Verbosef: func(format string, args ...any) { e.log.Debug("wireguard: " + fmt.Sprintf(format, args...)) },
 		Errorf:   func(format string, args ...any) { e.log.Warn("wireguard: " + fmt.Sprintf(format, args...)) },
 	}
-	e.dev = device.NewDevice(&filteredTUN{Device: tdev, f: e.Filter}, conn.NewDefaultBind(), logger)
-	if err := e.dev.IpcSet(fmt.Sprintf("private_key=%s\nlisten_port=%d\n", cfg.PrivateKey.Hex(), cfg.ListenPort)); err != nil {
+	e.dev = device.NewDevice(&filteredTUN{Device: tdev, f: e.Filter}, e.ms, logger)
+	fail := func(err error) (*Engine, error) {
 		e.dev.Close()
-		return nil, fmt.Errorf("configure wireguard: %w", err)
+		e.ms.Shutdown()
+		return nil, err
+	}
+	if err := e.dev.IpcSet(fmt.Sprintf("private_key=%s\nlisten_port=%d\n", cfg.PrivateKey.Hex(), cfg.ListenPort)); err != nil {
+		return fail(fmt.Errorf("configure wireguard: %w", err))
 	}
 	if err := e.dev.Up(); err != nil {
-		e.dev.Close()
-		return nil, fmt.Errorf("wireguard up: %w", err)
+		return fail(fmt.Errorf("wireguard up: %w", err))
 	}
 	if e.osc, err = newOSConfigurator(name, e.log); err != nil {
-		e.dev.Close()
-		return nil, err
+		return fail(err)
 	}
 	// Expose the standard UAPI socket so `wg show` and `wiremesh status` work.
 	if e.uapi, err = startUAPI(name, e.dev, e.log); err != nil {
@@ -135,24 +140,11 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 // Name returns the OS interface name.
 func (e *Engine) Name() string { return e.ifname }
 
-// ListenPort returns the UDP port WireGuard is bound to.
-//
-// wireguard-go reports 0 on kernels without IPv6: its bind opens the IPv4
-// socket on the requested port, then the failed IPv6 attempt overwrites the
-// returned port with 0. The IPv4 socket is still bound to the port we asked
-// for, so fall back to that.
-func (e *Engine) ListenPort() uint16 {
-	if s, err := e.dev.IpcGet(); err == nil {
-		for _, line := range strings.Split(s, "\n") {
-			if v, ok := strings.CutPrefix(line, "listen_port="); ok {
-				if p, _ := strconv.Atoi(v); p > 0 {
-					return uint16(p)
-				}
-			}
-		}
-	}
-	return e.port
-}
+// ListenPort returns the UDP port WireGuard (and disco/STUN) use.
+func (e *Engine) ListenPort() uint16 { return e.ms.Port() }
+
+// Magic exposes the transport for the run loop (endpoints, call-me-maybe).
+func (e *Engine) Magic() *magicsock.Conn { return e.ms }
 
 // Apply reconfigures the tunnel for a network map: interface addresses and
 // routes, WireGuard peers (incrementally, so existing sessions survive) and
@@ -180,8 +172,10 @@ func (e *Engine) Apply(nm *protocol.NetworkMap) error {
 		e.log.Info("interface configured", "addresses", fmt.Sprint(nm.Self.Addresses))
 	}
 
-	// Filter first, so newly added peers are never unfiltered.
+	// Filter first, so newly added peers are never unfiltered; then the
+	// transport's peer table, so WireGuard never sends to an unknown peer.
 	e.Filter.SetRules(nm.PacketFilter, nm.Self.Addresses)
+	e.ms.SetPeers(nm.Peers, nm.STUNServers)
 
 	uapi, next := peerDiff(e.peers, nm.Peers)
 	if uapi != "" {
@@ -192,21 +186,6 @@ func (e *Engine) Apply(nm *protocol.NetworkMap) error {
 	}
 	e.peers = next
 	return nil
-}
-
-// pickEndpoint chooses the endpoint to configure for a peer. Phase 4 has
-// no path probing, so it prefers IPv4, then the first candidate. Phase 5
-// replaces this with disco-probed path selection.
-func pickEndpoint(eps []netip.AddrPort) netip.AddrPort {
-	for _, ep := range eps {
-		if ep.Addr().Is4() {
-			return ep
-		}
-	}
-	if len(eps) > 0 {
-		return eps[0]
-	}
-	return netip.AddrPort{}
 }
 
 // peerDiff builds the UAPI commands that move WireGuard from the current
@@ -220,19 +199,17 @@ func peerDiff(cur map[protocol.Key]peerConfig, desired []protocol.Node) (string,
 		}
 		allowed := slices.Clone(p.AllowedIPs)
 		sort.Slice(allowed, func(i, j int) bool { return allowed[i].String() < allowed[j].String() })
-		pc := peerConfig{endpoint: pickEndpoint(p.Endpoints), allowedIPs: allowed}
+		pc := peerConfig{allowedIPs: allowed}
 		next[p.NodeKey] = pc
 		old, existed := cur[p.NodeKey]
-		endpointChanged := pc.endpoint.IsValid() && pc.endpoint != old.endpoint
 		ipsChanged := !slices.Equal(old.allowedIPs, pc.allowedIPs)
-		if existed && !endpointChanged && !ipsChanged {
+		if existed && !ipsChanged {
 			continue
 		}
 		fmt.Fprintf(&b, "public_key=%s\n", p.NodeKey.Hex())
-		if endpointChanged {
-			fmt.Fprintf(&b, "endpoint=%s\n", pc.endpoint)
-		}
 		if !existed {
+			// Identity endpoint: magicsock resolves it to the best path per packet.
+			fmt.Fprintf(&b, "endpoint=wm:%s\n", p.NodeKey.Hex())
 			// Keepalives hold NAT mappings open and make liveness visible.
 			b.WriteString("persistent_keepalive_interval=25\n")
 		}
@@ -348,6 +325,7 @@ func (e *Engine) Close() error {
 		_ = e.osc.Close()
 	}
 	e.dev.Close() // also closes the TUN device, which deletes the interface
+	e.ms.Shutdown()
 	e.log.Info("tunnel down")
 	return nil
 }

@@ -67,6 +67,9 @@ type Device struct {
 	RevokedAt        *time.Time       `json:"revoked_at,omitempty"`
 	CreatedAt        time.Time        `json:"created_at"`
 	UpdatedAt        time.Time        `json:"updated_at"`
+
+	// Online is live presence, filled in by the API layer (not stored).
+	Online bool `json:"online"`
 }
 
 // NewDevice holds the fields needed to register a device. Addresses are

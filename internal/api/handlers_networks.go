@@ -174,6 +174,7 @@ func (s *Server) handleUpdateNetwork(w http.ResponseWriter, r *http.Request, n *
 	if err != nil {
 		return err
 	}
+	s.notify(n.Network.ID)
 	s.netAudit(r, n, "network.update", "network", n.Network.ID.String(), map[string]any{
 		"name": name, "device_approval_required": approval, "key_expiry_days": expiry})
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"network": updated, "role": n.Role})
@@ -187,6 +188,7 @@ func (s *Server) handleDeleteNetwork(w http.ResponseWriter, r *http.Request, n *
 	if err := s.store.DeleteNetwork(r.Context(), n.Network.ID); err != nil {
 		return err
 	}
+	s.notify(n.Network.ID)
 	// network_id becomes NULL on the audit row via ON DELETE SET NULL; keep the ID in metadata.
 	s.audit(r, store.NewAuditEntry{ActorUserID: &n.User.ID, Action: "network.delete", TargetType: "network",
 		TargetID: n.Network.ID.String(), Metadata: map[string]any{"name": n.Network.Name}})
@@ -311,6 +313,7 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request, n *n
 	if self {
 		action = "member.leave"
 	}
+	s.notify(n.Network.ID) // removed devices' streams close with "revoked"
 	s.netAudit(r, n, action, "user", uid.String(), map[string]any{"devices_deleted": removed})
 	w.WriteHeader(http.StatusNoContent)
 	return nil

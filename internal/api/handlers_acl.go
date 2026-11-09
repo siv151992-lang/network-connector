@@ -21,6 +21,7 @@ func (s *Server) aclRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/v1/device/netmap", s.handle(s.device(s.handleNetmap)))
 	mux.HandleFunc("POST /api/v1/device/endpoints", s.handle(s.device(s.handleEndpoints)))
+	mux.HandleFunc("GET /api/v1/device/stream", s.handle(s.device(s.handleStream)))
 }
 
 func policyError(err error) error {
@@ -75,6 +76,7 @@ func (s *Server) handlePutACL(w http.ResponseWriter, r *http.Request, n *netCtx)
 	if err != nil {
 		return err
 	}
+	s.notify(n.Network.ID)
 	s.netAudit(r, n, "acl.update", "acl", n.Network.ID.String(), map[string]any{"version": saved.Version, "rules": len(pol.ACLs)})
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"policy": saved.Policy, "version": saved.Version, "updated_at": saved.UpdatedAt})
 	return nil
@@ -108,7 +110,7 @@ func (s *Server) handleTestACL(w http.ResponseWriter, r *http.Request, n *netCtx
 	default:
 		return httpx.Validation(map[string]string{"proto": "must be tcp, udp or icmp"})
 	}
-	b := &coord.Builder{Store: s.store, Now: s.now}
+	b := s.builder
 	var policy *acl.Compiled
 	var err error
 	if len(req.Policy) > 0 {
@@ -181,7 +183,7 @@ func (s *Server) handleNetmap(w http.ResponseWriter, r *http.Request, d *store.D
 	if err := s.store.TouchDevice(r.Context(), d.ID); err != nil {
 		return err
 	}
-	nm, err := (&coord.Builder{Store: s.store, Now: s.now}).Build(r.Context(), d)
+	nm, err := s.builder.Build(r.Context(), d)
 	if errors.Is(err, coord.ErrNotApproved) {
 		return &httpx.Error{Status: http.StatusForbidden, Code: "device_not_approved",
 			Message: "device status is " + d.Status + "; an admin must approve it"}
@@ -201,34 +203,15 @@ func (s *Server) handleNetmap(w http.ResponseWriter, r *http.Request, d *store.D
 
 const maxEndpoints = 16
 
-// handleEndpoints records where the device can be reached. Phase 4 clients
-// report their interface addresses; Phase 5 adds STUN-discovered ones.
+// handleEndpoints records where the device can be reached (REST form; the
+// stream carries the same message). Clients report interface addresses and
+// STUN-discovered public addresses.
 func (s *Server) handleEndpoints(w http.ResponseWriter, r *http.Request, d *store.Device) error {
 	var req protocol.EndpointsUpdate
 	if err := httpx.DecodeJSON(r, &req); err != nil {
 		return err
 	}
-	if len(req.Endpoints) > maxEndpoints {
-		return httpx.Validation(map[string]string{"endpoints": "at most 16 endpoints"})
-	}
-	clean := make([]netip.AddrPort, 0, len(req.Endpoints))
-	seen := map[netip.AddrPort]bool{}
-	for _, ep := range req.Endpoints {
-		a := ep.Addr().Unmap()
-		if !ep.IsValid() || ep.Port() == 0 || a.IsUnspecified() || a.IsMulticast() || a.IsLoopback() || a.IsLinkLocalUnicast() {
-			return httpx.Validation(map[string]string{"endpoints": "invalid endpoint " + ep.String()})
-		}
-		ep = netip.AddrPortFrom(a, ep.Port())
-		if !seen[ep] {
-			seen[ep] = true
-			clean = append(clean, ep)
-		}
-	}
-	var relay *int
-	if req.HomeRelay > 0 {
-		relay = &req.HomeRelay
-	}
-	if err := s.store.UpdateDeviceEndpoints(r.Context(), d.ID, clean, relay); err != nil {
+	if err := s.storeEndpoints(r.Context(), d, req); err != nil {
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)

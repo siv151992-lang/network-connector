@@ -101,6 +101,8 @@ type NetworkMap struct {
 	Self         Node         `json:"self"`
 	Peers        []Node       `json:"peers"`
 	PacketFilter []FilterRule `json:"packet_filter"`
+	// STUNServers are host:port addresses for public-endpoint discovery.
+	STUNServers []string `json:"stun_servers,omitempty"`
 	// PollInterval tells Phase 4 clients how often to refresh (Phase 5
 	// replaces polling with a WebSocket push stream).
 	PollInterval Duration `json:"poll_interval"`
@@ -130,6 +132,9 @@ type Node struct {
 	KeyExpiry  *time.Time       `json:"key_expiry,omitempty"`
 	KeyExpired bool             `json:"key_expired,omitempty"`
 	LastSeen   *time.Time       `json:"last_seen,omitempty"`
+	// Online is true while the node holds a control stream (real presence,
+	// not inferred from last_seen).
+	Online bool `json:"online,omitempty"`
 }
 
 // Protocol numbers used in filter rules (IANA). 0 means any protocol.
@@ -192,4 +197,41 @@ func (d *Duration) UnmarshalText(b []byte) error {
 	}
 	*d = Duration(v)
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Control stream (GET /api/v1/device/stream, WebSocket, JSON text frames)
+// ---------------------------------------------------------------------------
+
+// Stream message types.
+const (
+	// Server -> device
+	StreamMap         = "map"           // full network map (sent on connect and on every change)
+	StreamCallMeMaybe = "call_me_maybe" // a peer asks us to probe its endpoints now (NAT hole punching)
+	StreamRevoked     = "revoked"       // credential revoked; the device must shut down
+	// Device -> server
+	StreamEndpoints = "endpoints" // EndpointsUpdate
+	// StreamCallMeMaybe is also sent device -> server, addressed with To.
+)
+
+// StreamMessage is one frame on the control stream.
+type StreamMessage struct {
+	Type        string           `json:"type"`
+	Map         *NetworkMap      `json:"map,omitempty"`
+	Endpoints   *EndpointsUpdate `json:"endpoints,omitempty"`
+	CallMeMaybe *CallMeMaybe     `json:"call_me_maybe,omitempty"`
+}
+
+// CallMeMaybe asks a peer to start sending disco pings to the listed
+// endpoints immediately, so both NATs see outbound packets at the same time.
+// Device -> server: To is set. Server -> device: From is set (by the server,
+// from the authenticated sender; never trusted from the client).
+type CallMeMaybe struct {
+	From      Key              `json:"from,omitempty"`
+	To        Key              `json:"to,omitempty"`
+	Endpoints []netip.AddrPort `json:"endpoints"`
+	// Quiesce asks the peer to stop sending anything to us for one quiet
+	// period, so stale NAT state on both sides expires before a fresh,
+	// synchronized hole-punching attempt (see pkg/client/magicsock).
+	Quiesce bool `json:"quiesce,omitempty"`
 }

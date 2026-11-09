@@ -157,11 +157,15 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, pool *pgxp
 
 	st := store.New(pool)
 	go janitor(ctx, st, log)
+	hub := api.NewHub(st, cfg, log, nil)
+	if len(cfg.STUNServers) == 0 {
+		log.Warn("WIREMESH_STUN_SERVERS not set: devices can only connect directly over reachable addresses (no NAT traversal)")
+	}
 
 	handler := api.NewHandler(api.Deps{
 		Config: cfg, Log: log, Store: st, DB: pool, Limiter: limiter, AuthLimiter: authLimiter,
 		Hasher: auth.NewHasher(auth.DefaultArgon2Params, cfg.MaxConcurrentHashes),
-		Mailer: mailer, Box: box,
+		Mailer: mailer, Box: box, Hub: hub,
 	})
 
 	srv := &http.Server{
@@ -193,6 +197,7 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, pool *pgxp
 	}
 
 	log.Info("shutting down", "timeout", cfg.ShutdownTimeout)
+	hub.CloseAll() // device streams are hijacked connections; Shutdown doesn't track them
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {

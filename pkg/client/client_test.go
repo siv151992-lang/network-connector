@@ -209,25 +209,26 @@ func node(k protocol.Key, ip string, eps ...string) protocol.Node {
 func TestPeerDiff(t *testing.T) {
 	a, b := key(1), key(2)
 	uapi, cur := peerDiff(map[protocol.Key]peerConfig{}, []protocol.Node{
-		node(a, "100.64.0.2", "[2001:db8::1]:51820", "10.0.0.2:51820"), node(b, "100.64.0.3"),
+		node(a, "100.64.0.2", "10.0.0.2:51820"), node(b, "100.64.0.3"),
 	})
 	for _, want := range []string{
-		"public_key=" + a.Hex() + "\nendpoint=10.0.0.2:51820\npersistent_keepalive_interval=25\nreplace_allowed_ips=true\nallowed_ip=100.64.0.2/32\n",
-		"public_key=" + b.Hex() + "\npersistent_keepalive_interval=25\n", // no endpoint known yet
+		"public_key=" + a.Hex() + "\nendpoint=wm:" + a.Hex() + "\npersistent_keepalive_interval=25\nreplace_allowed_ips=true\nallowed_ip=100.64.0.2/32\n",
+		"public_key=" + b.Hex() + "\nendpoint=wm:" + b.Hex() + "\n",
 	} {
 		if !strings.Contains(uapi, want) {
 			t.Errorf("initial config missing:\n%s\n---got---\n%s", want, uapi)
 		}
 	}
 
-	// Unchanged map: nothing to send (sessions untouched).
-	if uapi, _ := peerDiff(cur, []protocol.Node{node(a, "100.64.0.2", "10.0.0.2:51820"), node(b, "100.64.0.3")}); uapi != "" {
-		t.Fatalf("no-op diff produced:\n%s", uapi)
+	// Endpoint changes are magicsock's business: no WireGuard reconfiguration,
+	// so established sessions are never touched.
+	if uapi, _ := peerDiff(cur, []protocol.Node{node(a, "100.64.0.2", "10.0.0.9:51820"), node(b, "100.64.0.3")}); uapi != "" {
+		t.Fatalf("endpoint-only change produced:\n%s", uapi)
 	}
 
-	// Endpoint change for a, b removed.
-	uapi, cur = peerDiff(cur, []protocol.Node{node(a, "100.64.0.2", "10.0.0.9:51820")})
-	want := "public_key=" + a.Hex() + "\nendpoint=10.0.0.9:51820\npublic_key=" + b.Hex() + "\nremove=true\n"
+	// Allowed IPs change for a, b removed.
+	uapi, cur = peerDiff(cur, []protocol.Node{node(a, "100.64.0.20")})
+	want := "public_key=" + a.Hex() + "\nreplace_allowed_ips=true\nallowed_ip=100.64.0.20/32\npublic_key=" + b.Hex() + "\nremove=true\n"
 	if uapi != want {
 		t.Fatalf("diff:\n%s\nwant:\n%s", uapi, want)
 	}
@@ -270,15 +271,5 @@ func TestStateFile(t *testing.T) {
 	_ = os.Chmod(path, 0o644)
 	if _, err := LoadOrCreateState(path, ""); err == nil || !strings.Contains(err.Error(), "readable by other users") {
 		t.Fatalf("world-readable state accepted: %v", err)
-	}
-}
-
-func TestPickEndpoint(t *testing.T) {
-	if pickEndpoint(nil).IsValid() {
-		t.Fatal("no endpoints should give invalid")
-	}
-	eps := []netip.AddrPort{netip.MustParseAddrPort("[2001:db8::1]:1"), netip.MustParseAddrPort("192.0.2.1:2")}
-	if pickEndpoint(eps).Port() != 2 {
-		t.Fatal("ipv4 not preferred")
 	}
 }

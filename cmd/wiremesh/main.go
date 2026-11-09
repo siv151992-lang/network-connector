@@ -10,6 +10,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -109,6 +110,7 @@ func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	state := fs.String("state", defaultState, "state file")
 	iface := fs.String("iface", "wm0", "tunnel interface name")
+	asJSON := fs.Bool("json", false, "machine-readable output")
 	_ = fs.Parse(args)
 
 	st, err := client.LoadState(*state)
@@ -130,6 +132,41 @@ func cmdStatus(args []string) error {
 		return err
 	}
 	stats := readUAPI(*iface)
+	if *asJSON {
+		type peerJSON struct {
+			Name          string   `json:"name"`
+			Addresses     []string `json:"addresses"`
+			Online        bool     `json:"online"`
+			Endpoint      string   `json:"endpoint,omitempty"` // current WireGuard path
+			LastHandshake string   `json:"last_handshake,omitempty"`
+			RxBytes       uint64   `json:"rx_bytes"`
+			TxBytes       uint64   `json:"tx_bytes"`
+		}
+		out := struct {
+			Self    string     `json:"self"`
+			Running bool       `json:"running"`
+			Peers   []peerJSON `json:"peers"`
+		}{Self: nm.Self.Name, Running: stats != nil, Peers: []peerJSON{}}
+		for _, p := range nm.Peers {
+			pj := peerJSON{Name: p.Name, Online: p.Online}
+			for _, a := range p.Addresses {
+				pj.Addresses = append(pj.Addresses, a.Addr().String())
+			}
+			if s, ok := stats[p.NodeKey]; ok {
+				if !strings.HasPrefix(s.Endpoint, "wm:") {
+					pj.Endpoint = s.Endpoint
+				}
+				if !s.LastHandshake.IsZero() {
+					pj.LastHandshake = s.LastHandshake.UTC().Format(time.RFC3339)
+				}
+				pj.RxBytes, pj.TxBytes = s.RxBytes, s.TxBytes
+			}
+			out.Peers = append(out.Peers, pj)
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
 
 	fmt.Printf("%s  %s  network %q\n", nm.Self.Name, joinAddrs(nm.Self.Addresses), nm.Network.Name)
 	if stats == nil {
@@ -140,7 +177,7 @@ func cmdStatus(args []string) error {
 	for _, p := range nm.Peers {
 		ep, hs, rx, tx := "-", "never", "-", "-"
 		if s, ok := stats[p.NodeKey]; ok {
-			if s.Endpoint != "" {
+			if s.Endpoint != "" && !strings.HasPrefix(s.Endpoint, "wm:") {
 				ep = s.Endpoint
 			}
 			if !s.LastHandshake.IsZero() {
