@@ -1,4 +1,4 @@
-//go:build !linux || android
+//go:build (!linux && !windows) || android
 
 package client
 
@@ -9,10 +9,11 @@ import (
 	"net/netip"
 
 	"golang.zx2c4.com/wireguard/device"
+	"golang.zx2c4.com/wireguard/tun"
 )
 
 // Windows (Phase 8) and Android (Phase 7) provide their own configurators.
-func newOSConfigurator(name string, log *slog.Logger) (OSConfigurator, error) {
+func newOSConfigurator(name string, tdev tun.Device, log *slog.Logger) (OSConfigurator, error) {
 	return nil, errors.New("interface configuration is not implemented on this platform yet")
 }
 

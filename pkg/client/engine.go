@@ -118,7 +118,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	if err := e.dev.Up(); err != nil {
 		return fail(fmt.Errorf("wireguard up: %w", err))
 	}
-	if e.osc, err = newOSConfigurator(name, e.log); err != nil {
+	if e.osc, err = newOSConfigurator(name, tdev, e.log); err != nil {
 		return fail(err)
 	}
 	// Expose the standard UAPI socket so `wg show` and `wiremesh status` work.

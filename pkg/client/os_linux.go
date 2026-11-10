@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/ipc"
+	"golang.zx2c4.com/wireguard/tun"
 )
 
 // linuxConfigurator manages addresses and routes with netlink (no shelling
@@ -29,7 +30,7 @@ type linuxConfigurator struct {
 	routes []netip.Prefix
 }
 
-func newOSConfigurator(name string, log *slog.Logger) (OSConfigurator, error) {
+func newOSConfigurator(name string, _ tun.Device, log *slog.Logger) (OSConfigurator, error) {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
 		return nil, fmt.Errorf("find interface %s: %w", name, err)

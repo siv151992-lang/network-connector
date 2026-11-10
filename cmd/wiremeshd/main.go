@@ -1,6 +1,7 @@
-// Command wiremeshd is the WireMesh background service (systemd on Linux;
-// see clients/linux/wiremeshd.service). It owns the tunnel and serves a local
-// API on a Unix socket for the `wiremesh` CLI.
+// Command wiremeshd is the WireMesh background service: a systemd service on
+// Linux (clients/linux/wiremeshd.service) and a Windows service ("WireMesh";
+// `wiremeshd install`). It owns the tunnel and serves a local API on a Unix
+// domain socket for the `wiremesh` CLI and the tray app.
 package main
 
 import (
@@ -24,6 +25,15 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		if handled, err := platformCommand(os.Args[1:]); handled {
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
 	state := flag.String("state", client.DefaultStatePath(), "state file (keys + credential)")
 	sock := flag.String("socket", client.DefaultSocketPath(), "local API socket")
 	iface := flag.String("iface", "wm0", "tunnel interface name")
@@ -36,17 +46,30 @@ func main() {
 		os.Exit(2)
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
-	if err := run(log, *state, *sock, *iface, uint16(*port)); err != nil {
+	start := func(ctx context.Context) error { return run(ctx, log, *state, *sock, *iface, uint16(*port)) }
+	if ran, err := runAsService(start); ran {
+		if err != nil {
+			log.Error("wiremeshd service failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := start(ctx); err != nil {
 		log.Error("wiremeshd failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, state, sock, iface string, port uint16) error {
+func run(ctx context.Context, log *slog.Logger, state, sock, iface string, port uint16) error {
 	d := &client.Daemon{StatePath: state, InterfaceName: iface, ListenPort: port, Version: version.Version, Log: log}
 
 	if err := os.MkdirAll(filepath.Dir(sock), 0o755); err != nil {
 		return err
+	}
+	if err := secureDir(filepath.Dir(sock)); err != nil {
+		return fmt.Errorf("secure %s: %w", filepath.Dir(sock), err)
 	}
 	_ = os.Remove(sock) // stale socket from a previous run
 	l, err := net.Listen("unix", sock)
@@ -63,6 +86,9 @@ func run(log *slog.Logger, state, sock, iface string, port uint16) error {
 	if err := os.Chmod(sock, mode); err != nil {
 		return err
 	}
+	if err := secureSocket(sock); err != nil {
+		return fmt.Errorf("secure socket: %w", err)
+	}
 	srv := &http.Server{Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -72,8 +98,6 @@ func run(log *slog.Logger, state, sock, iface string, port uint16) error {
 	log.Info("wiremeshd started", "socket", sock, "version", version.Version)
 	d.AutoStart()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	<-ctx.Done()
 	log.Info("shutting down")
 	d.Down(false) // the tunnel comes back on next start

@@ -112,6 +112,20 @@ as the endpoint for relayed peers.
   there automatically.
 * Packaging: `make deb` (or `clients/linux/build-deb.sh <version> <arch>`).
 
+## Phase 8: Windows
+
+`make windows` cross-builds `dist/wiremesh-windows-<arch>-<version>.zip`, which
+contains `wiremeshd.exe` (the "WireMesh" Windows service: wireguard-go +
+Wintun, addresses/routes via winipcfg), `wiremesh.exe` (same CLI as Linux),
+`wiremesh-tray.exe` (tray app) and `install.ps1`/`uninstall.ps1`. The
+installer fetches Wintun and checks its WireGuard LLC Authenticode signature.
+The local API is an AF_UNIX socket in `C:\ProgramData\WireMesh` (SYSTEM,
+Administrators and the interactive user may connect; `state.json` is
+SYSTEM/Administrators-only).
+
+Status: compiled and vetted for windows/amd64 and arm64, but **not yet run
+on a Windows machine**.
+
 ## Phase 10: web dashboard
 
 ```bash

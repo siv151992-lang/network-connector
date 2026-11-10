@@ -8,16 +8,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -75,40 +71,16 @@ func usage() {
 
 // --- daemon client ------------------------------------------------------------
 
-type daemonClient struct{ hc *http.Client }
+type daemonClient struct{ *client.LocalClient }
 
-func newDaemonClient(sock string) *daemonClient {
-	return &daemonClient{hc: &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
-		}},
-	}}
-}
+func newDaemonClient(sock string) *daemonClient { return &daemonClient{client.NewLocalClient(sock)} }
 
 func (c *daemonClient) call(method, path string, body any) (*client.DaemonStatus, error) {
-	var rd io.Reader
-	if body != nil {
-		b, _ := json.Marshal(body)
-		rd = bytes.NewReader(b)
+	st, err := c.Call(method, path, body)
+	if errors.Is(err, client.ErrDaemonUnreachable) {
+		return nil, fmt.Errorf("%w (is it running? Linux: `sudo systemctl start wiremeshd`; are you root or in the wiremesh group?)", err)
 	}
-	req, _ := http.NewRequest(method, "http://wiremeshd"+path, rd)
-	res, err := c.hc.Do(req)
-	if err != nil {
-		var opErr *net.OpError
-		if errors.As(err, &opErr) {
-			return nil, fmt.Errorf("cannot reach wiremeshd (is it running? `sudo systemctl start wiremeshd`; are you root or in the wiremesh group?): %w", err)
-		}
-		return nil, err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		var e struct{ Error string }
-		_ = json.NewDecoder(res.Body).Decode(&e)
-		return nil, errors.New(e.Error)
-	}
-	var st client.DaemonStatus
-	return &st, json.NewDecoder(res.Body).Decode(&st)
+	return st, err
 }
 
 func socketFlag(fs *flag.FlagSet) *string {

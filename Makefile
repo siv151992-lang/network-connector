@@ -4,7 +4,7 @@ LDFLAGS := -s -w -X github.com/siv151992-lang/network-connector/internal/version
 DEV_DB  ?= postgres://wiremesh:wiremesh@localhost:5432/wiremesh?sslmode=disable
 TEST_DB ?= postgres://wiremesh:wiremesh@localhost:5432/postgres?sslmode=disable
 
-.PHONY: deb web web-e2e build build-client test test-integration test-netns lint run migrate migrate-status dev-db docker
+.PHONY: deb windows web web-e2e build build-client test test-integration test-netns lint run migrate migrate-status dev-db docker
 
 build:
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/wiremesh-server ./cmd/wiremesh-server
@@ -19,6 +19,11 @@ test-netns:
 # Debian/Ubuntu package (wiremesh + wiremeshd + systemd unit) into dist/.
 deb:
 	clients/linux/build-deb.sh "$(VERSION)" amd64
+
+# Windows release zips (amd64 + arm64) into dist/.
+windows:
+	clients/windows/build.sh "$(VERSION)" amd64
+	clients/windows/build.sh "$(VERSION)" arm64
 
 web:
 	cd web && npm ci && npm run build
