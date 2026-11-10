@@ -116,6 +116,8 @@ type NetworkInfo struct {
 	Name     string       `json:"name"`
 	IPv4CIDR netip.Prefix `json:"ipv4_cidr"`
 	IPv6CIDR netip.Prefix `json:"ipv6_cidr"`
+	// Domain is the DNS suffix for device names: <device>.<Domain>.
+	Domain string `json:"domain,omitempty"`
 }
 
 // Node is a device as seen by other devices.

@@ -19,6 +19,7 @@ import Audit from "./pages/Audit";
 import Settings from "./pages/Settings";
 import Admin from "./pages/Admin";
 import NewNetwork from "./pages/NewNetwork";
+import Activate from "./pages/Activate";
 
 const qc = new QueryClient({
   defaultOptions: {
@@ -67,6 +68,7 @@ function App() {
         <Route path="settings" element={<Settings />} />
         <Route path="admin" element={<Admin />} />
         <Route path="networks/new" element={<NewNetwork />} />
+        <Route path="activate" element={<Activate />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

@@ -108,7 +108,8 @@ func (b *Builder) Build(ctx context.Context, self *store.Device) (*protocol.Netw
 	}
 
 	nm := &protocol.NetworkMap{
-		Network:      protocol.NetworkInfo{ID: n.ID.String(), Name: n.Name, IPv4CIDR: n.IPv4CIDR, IPv6CIDR: n.IPv6CIDR},
+		Network: protocol.NetworkInfo{ID: n.ID.String(), Name: n.Name, IPv4CIDR: n.IPv4CIDR, IPv6CIDR: n.IPv6CIDR,
+			Domain: n.Slug + ".wm.internal"},
 		Self:         toNode(self, emails[self.UserID]),
 		Peers:        []protocol.Node{},
 		PacketFilter: []protocol.FilterRule{},

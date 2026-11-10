@@ -4,7 +4,7 @@ A self-hostable private mesh VPN built on WireGuard: a Go control server
 coordinates your devices, and traffic flows end-to-end encrypted directly
 between them, or through an encrypted relay when NATs block direct paths.
 
-> **Status: Phases 1–6 and 10 complete** (Android/Windows clients pending). Accounts, networks, roles, auth keys and
+> **Status: Phases 1–6, 9 and 10 complete** (Android/Windows clients pending). Accounts, networks, roles, auth keys and
 > device enrollment work over the API. The Linux client brings up **real
 > WireGuard tunnels** with ACL-enforced packet filtering, pushes and receives
 > changes instantly over a control stream, and connects devices **directly
@@ -21,10 +21,12 @@ between them, or through an encrypted relay when NATs block direct paths.
 
 ## Join a device (Linux)
 ```bash
-go build -o wiremesh ./cmd/wiremesh
-sudo WIREMESH_AUTH_KEY=wmk_… ./wiremesh up --server https://vpn.example.com
-sudo ./wiremesh status
+make deb && sudo dpkg -i dist/wiremesh_*_amd64.deb     # installs + starts wiremeshd
+sudo wiremesh up --server https://vpn.example.com        # prints a link + code to approve in the dashboard
+wiremesh status                                         # peers, direct/relay path, traffic
+ssh nas.home.wm.internal                                # MagicDNS names (with systemd-resolved)
 ```
+Unattended: `sudo wiremesh up --server … --auth-key wmk_…`. Without the daemon: `sudo wiremesh run --server …`.
 
 ## Quick start (development)
 ```bash

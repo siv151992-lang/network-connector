@@ -23,6 +23,8 @@ type State struct {
 	Credential   string              `json:"credential,omitempty"`
 	DeviceID     string              `json:"device_id,omitempty"`
 	NetworkID    string              `json:"network_id,omitempty"`
+	// Down records `wiremesh down`: the daemon won't auto-start the tunnel.
+	Down bool `json:"down,omitempty"`
 }
 
 // LoadOrCreateState reads the state file, or generates fresh keys if it

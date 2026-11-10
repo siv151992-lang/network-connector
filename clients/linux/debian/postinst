@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+  getent group wiremesh >/dev/null || groupadd --system wiremesh
+  mkdir -p /run/wireguard
+  if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+    systemctl enable --now wiremeshd.service
+  fi
+  echo "WireMesh installed. Connect with:  sudo wiremesh up --server https://your-server"
+  echo "(add yourself to the 'wiremesh' group to run wiremesh without sudo)"
+fi

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/netip"
 
 	"golang.zx2c4.com/wireguard/device"
 )
@@ -17,4 +18,8 @@ func newOSConfigurator(name string, log *slog.Logger) (OSConfigurator, error) {
 
 func startUAPI(string, *device.Device, *slog.Logger) (io.Closer, error) {
 	return nil, errors.New("UAPI not supported on this platform")
+}
+
+func configureSystemDNS(string, netip.Addr, string) error {
+	return errors.New("system DNS configuration is not implemented on this platform yet")
 }

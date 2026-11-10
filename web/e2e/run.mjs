@@ -196,6 +196,23 @@ try {
   for (const a of ["device.approve", "acl.update", "member.add", "device.tags"]) await expectText(a);
   ok("audit log lists approve/tags/acl/member events");
 
+  // Device-code login: a headless device shows a code; approve it on /activate.
+  const startRes = await fetch(`${API}/api/v1/device/login/start`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ node_key: wgKey(), disco_key: wgKey(), hostname: "headless-pi", os: "linux" }),
+  });
+  const { code, verify_url, poll_token } = await startRes.json();
+  await page.goto(WEB + new URL(verify_url).pathname + new URL(verify_url).search);
+  await expectText("headless-pi");
+  await page.getByRole("button", { name: "Approve device" }).click();
+  await page.getByTestId("activated").waitFor();
+  const polled = await (await fetch(`${API}/api/v1/device/login/poll`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ poll_token }),
+  })).json();
+  if (polled.status !== "approved" || !polled.credential?.startsWith("wmd_")) throw new Error("device did not receive its credential");
+  ok(`activate page: code ${code} approved; device received its credential`);
+  await shot("09-activate");
+
   // Revoke the laptop: its real stream is closed with a revoke message.
   const revoked = new Promise((r) => wsA.on("message", (m) => String(m).includes('"revoked"') && r()));
   await page.getByRole("link", { name: "Devices", exact: true }).click();

@@ -99,6 +99,9 @@ func janitor(ctx context.Context, s *store.Store, log *slog.Logger) {
 		} else if n > 0 {
 			log.Info("janitor: deleted stale sessions", "count", n)
 		}
+		if _, err := s.DeleteExpiredDeviceLogins(ctx); err != nil && ctx.Err() == nil {
+			log.Warn("janitor: delete device logins", "error", err)
+		}
 		if n, err := s.DeleteStaleUserTokens(ctx, cutoff); err != nil && ctx.Err() == nil {
 			log.Warn("janitor: delete tokens", "error", err)
 		} else if n > 0 {

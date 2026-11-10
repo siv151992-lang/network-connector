@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -128,4 +129,21 @@ func startUAPI(name string, dev *device.Device, log *slog.Logger) (io.Closer, er
 		}
 	}()
 	return l, nil
+}
+
+// configureSystemDNS routes queries for domain to our MagicDNS server via
+// systemd-resolved (per-link DNS + routing-only domain). The settings vanish
+// with the interface, so there is nothing to undo.
+func configureSystemDNS(iface string, server netip.Addr, domain string) error {
+	path, err := exec.LookPath("resolvectl")
+	if err != nil {
+		return errors.New("systemd-resolved (resolvectl) not available")
+	}
+	if out, err := exec.Command(path, "dns", iface, server.String()).CombinedOutput(); err != nil {
+		return fmt.Errorf("resolvectl dns: %v: %s", err, out)
+	}
+	if out, err := exec.Command(path, "domain", iface, "~"+domain).CombinedOutput(); err != nil {
+		return fmt.Errorf("resolvectl domain: %v: %s", err, out)
+	}
+	return nil
 }

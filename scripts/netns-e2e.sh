@@ -37,7 +37,7 @@ cleanup() {
   set +e
   for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null; done
   sleep 1
-  ip netns del wm-a 2>/dev/null; ip netns del wm-b 2>/dev/null
+  ip netns del wm-a 2>/dev/null; ip netns del wm-b 2>/dev/null; ip netns del wm-c 2>/dev/null
   ip link del wmbr0 2>/dev/null
   psql "$DB_ADMIN" -qc "DROP DATABASE IF EXISTS $DB_NAME WITH (FORCE)" >/dev/null 2>&1
   rm -rf "$WORK"
@@ -47,12 +47,12 @@ trap cleanup EXIT
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 
 log "build"
-(cd "$ROOT" && go build -o "$WORK/wiremesh-server" ./cmd/wiremesh-server && go build -o "$WORK/wiremesh" ./cmd/wiremesh)
+(cd "$ROOT" && for b in wiremesh-server wiremesh wiremeshd; do go build -o "$WORK/$b" ./cmd/$b; done)
 ok "binaries built"
 
 log "network namespaces"
 ip link add wmbr0 type bridge && ip addr add $SERVER_IP/24 dev wmbr0 && ip link set wmbr0 up
-for n in a b; do
+for n in a b c; do
   ip netns add wm-$n
   ip link add veth-$n type veth peer name eth0 netns wm-$n
   ip link set veth-$n master wmbr0 up
@@ -61,6 +61,7 @@ for n in a b; do
 done
 ip -n wm-a addr add 10.99.0.11/24 dev eth0
 ip -n wm-b addr add 10.99.0.12/24 dev eth0
+ip -n wm-c addr add 10.99.0.13/24 dev eth0
 ip netns exec wm-a ping -c1 -W2 10.99.0.12 >/dev/null && ok "underlay: wm-a reaches wm-b on 10.99.0.0/24"
 
 log "control server"
@@ -83,10 +84,11 @@ KEY=$(call -d '{"reusable":true,"preauthorized":true}' $API/networks/$NID/auth-k
 ok "network $NID and auth key created"
 
 log "start clients"
-start_client() { # name iface
-  ip netns exec wm-$1 env WIREMESH_AUTH_KEY="$KEY" "$WORK/wiremesh" up --server $URL \
-    --state "$WORK/$1.json" --iface "$2" --hostname "node-$1" >"$WORK/client-$1.log" 2>&1 &
+start_client() { # name iface: wiremeshd in the namespace, then `wiremesh up` through its socket
+  ip netns exec wm-$1 "$WORK/wiremeshd" --state "$WORK/$1.json" --socket "$WORK/$1.sock" --iface "$2" >"$WORK/client-$1.log" 2>&1 &
   PIDS+=($!)
+  for _ in $(seq 50); do [ -S "$WORK/$1.sock" ] && break; sleep 0.1; done
+  ip netns exec wm-$1 "$WORK/wiremesh" up --socket "$WORK/$1.sock" --server $URL --auth-key "$KEY" --hostname "node-$1" --timeout 30s
 }
 start_client a wma0
 start_client b wmb0
@@ -115,7 +117,7 @@ else
   echo "   - kernel has no IPv6: skipping the IPv6 ping (clients run IPv4-only)"
 fi
 # Prove the packets really travel inside WireGuard: the handshake happened.
-ip netns exec wm-a "$WORK/wiremesh" status --state "$WORK/a.json" --iface wma0 | tee "$WORK/status-a.txt"
+ip netns exec wm-a "$WORK/wiremesh" status --socket "$WORK/a.sock" | tee "$WORK/status-a.txt"
 grep -q "ago" "$WORK/status-a.txt" && ok "WireGuard handshake completed (status shows it)" || fail "no handshake"
 
 log "access control"
@@ -138,7 +140,49 @@ log "revocation"
 BID=$(python3 -c "import json;print(json.load(open('$WORK/b.json'))['device_id'])")
 call -X POST $API/networks/$NID/devices/$BID/revoke >/dev/null && ok "B revoked by admin"
 wait_for "B's client shut down" grep -q "credential revoked" "$WORK/client-b.log"
+b_says_revoked() { ip netns exec wm-b "$WORK/wiremesh" status --socket "$WORK/b.sock" | grep -q "revoked"; }
+wait_for "wiremesh status on B explains the revocation" b_says_revoked
 wait_for "A's map no longer contains B" grep -q "network map applied.*peers=0" "$WORK/client-a.log"
 wait_for "tunnel to B is gone" blocked ip netns exec wm-a ping -c1 -W1 "$B4"
+
+log "Linux client: device-code login, MagicDNS, down/up, logout"
+call -X PUT -d '{"version":1,"policy":{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}}' $API/networks/$NID/acl >/dev/null
+ip netns exec wm-c "$WORK/wiremeshd" --state "$WORK/c.json" --socket "$WORK/c.sock" --iface wmc0 >"$WORK/client-c.log" 2>&1 & PIDS+=($!)
+for _ in $(seq 50); do [ -S "$WORK/c.sock" ] && break; sleep 0.1; done
+ip netns exec wm-c "$WORK/wiremesh" up --socket "$WORK/c.sock" --server $URL --hostname node-c --timeout 60s >"$WORK/up-c.out" 2>&1 & UP=$!
+wait_for "\`wiremesh up\` without an auth key prints a login link and code" grep -q "confirm the code" "$WORK/up-c.out"
+CODE=$(grep -oE '[A-Z]{4}-[A-Z]{4}' "$WORK/up-c.out" | head -1)
+grep -q "/activate?code=$CODE" "$WORK/up-c.out" && ok "login link points at the dashboard: /activate?code=$CODE"
+call -d "{\"code\":\"$CODE\",\"network_id\":\"$NID\"}" $API/device/login/approve >/dev/null && ok "user approved the code (as in the dashboard)"
+wait "$UP" || fail "\`wiremesh up\` failed: $(cat "$WORK/up-c.out")"
+ok "\`wiremesh up\` finished: $(grep 'connected to' "$WORK/up-c.out")"
+C4=$(ip netns exec wm-c ip -4 -o addr show dev wmc0 | awk '{print $4}' | cut -d/ -f1)
+wait_for "C reaches A over the tunnel" ip netns exec wm-c ping -c1 -W1 "$A4"
+dnsq() { # ns server name -> first A record
+  ip netns exec "$1" python3 -c "
+import socket,struct,sys
+srv,name=sys.argv[1],sys.argv[2]
+q=struct.pack('>HHHHHH',0x1234,0x0100,1,0,0,0)+b''.join(bytes([len(l)])+l.encode() for l in name.split('.'))+b'\x00'+struct.pack('>HH',1,1)
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(2);s.sendto(q,(srv,53));r=s.recv(512)
+if struct.unpack('>H',r[6:8])[0]==0: sys.exit(1)
+print(socket.inet_ntoa(r[-4:]))" "$2" "$3"
+}
+GOT=$(dnsq wm-c "$C4" "node-a.netns-test.wm.internal")
+[ "$GOT" = "$A4" ] && ok "MagicDNS: node-a.netns-test.wm.internal -> $GOT" || fail "MagicDNS answered '$GOT', expected $A4"
+dnsq wm-c "$C4" "nothere.netns-test.wm.internal" >/dev/null 2>&1 && fail "unknown name resolved" || ok "MagicDNS: unknown names get no answer"
+ip netns exec wm-c "$WORK/wiremesh" status --socket "$WORK/c.sock" | tee "$WORK/status-c.txt" | grep -q "node-a" && ok "\`wiremesh status\` lists peers"
+
+ip netns exec wm-c "$WORK/wiremesh" down --socket "$WORK/c.sock" >/dev/null
+ip netns exec wm-c ip link show wmc0 >/dev/null 2>&1 && fail "interface still present after down" || ok "\`wiremesh down\` removed the tunnel interface"
+pkill -f -- "--socket $WORK/c.sock" || true; sleep 1
+ip netns exec wm-c "$WORK/wiremeshd" --state "$WORK/c.json" --socket "$WORK/c.sock" --iface wmc0 >>"$WORK/client-c.log" 2>&1 & PIDS+=($!)
+for _ in $(seq 50); do [ -S "$WORK/c.sock" ] && break; sleep 0.1; done; sleep 1
+ip netns exec wm-c "$WORK/wiremesh" status --socket "$WORK/c.sock" | grep -q stopped && ok "after a daemon restart the tunnel stays down (down is remembered)"
+ip netns exec wm-c "$WORK/wiremesh" up --socket "$WORK/c.sock" --timeout 30s >/dev/null && ok "\`wiremesh up\` reconnects without a new login"
+wait_for "C reaches A again" ip netns exec wm-c ping -c1 -W1 "$A4"
+CCRED=$(python3 -c "import json;print(json.load(open('$WORK/c.json'))['credential'])")
+ip netns exec wm-c "$WORK/wiremesh" logout --socket "$WORK/c.sock" >/dev/null
+[ ! -f "$WORK/c.json" ] && ok "\`wiremesh logout\` deleted the keys" || fail "state file still present"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $CCRED" $API/device/self)" = 401 ] && ok "logout revoked the credential on the server" || fail "credential still valid"
 
 log "ALL CHECKS PASSED"

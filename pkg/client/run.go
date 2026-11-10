@@ -26,6 +26,13 @@ type Options struct {
 	Log           *slog.Logger
 	// OnMap, if set, is called after each successfully applied network map.
 	OnMap func(*protocol.NetworkMap)
+	// OnLogin, if set, enables device-code login when there is no auth key:
+	// it receives the URL and code the user must open/enter.
+	OnLogin func(url, code string)
+	// OnEngine is called once the tunnel exists (daemon status uses it).
+	OnEngine func(*Engine)
+	// OnNeedsApproval is called while an admin still has to approve the device.
+	OnNeedsApproval func()
 }
 
 // Run enrolls the device if needed, brings up the tunnel and keeps it in sync
@@ -53,13 +60,25 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 
+	host := o.Hostname
+	if host == "" {
+		host, _ = os.Hostname()
+	}
+	if st.Credential == "" && o.AuthKey == "" && o.OnLogin != nil {
+		cred, err := deviceCodeLogin(ctx, ctl, st, host, o.Version, o.OnLogin, log)
+		if err != nil {
+			return err
+		}
+		st.Credential = cred
+		if err := st.Save(o.StatePath); err != nil {
+			return fmt.Errorf("save state: %w", err)
+		}
+		ctl.SetCredential(cred)
+		log.Info("logged in with device code")
+	}
 	if st.Credential == "" {
 		if o.AuthKey == "" {
 			return errors.New("device is not enrolled: pass --auth-key (create one in the dashboard or via POST /networks/{id}/auth-keys)")
-		}
-		host := o.Hostname
-		if host == "" {
-			host, _ = os.Hostname()
 		}
 		res, err := ctl.Register(ctx, RegisterRequest{
 			AuthKey: o.AuthKey, NodeKey: st.NodePrivate.Public().String(), DiscoKey: st.DiscoPrivate.Public().String(),
@@ -77,7 +96,7 @@ func Run(ctx context.Context, o Options) error {
 	}
 
 	// Wait for approval before creating any interface.
-	nm, err := waitForMap(ctx, ctl, log)
+	nm, err := waitForMap(ctx, ctl, log, o.OnNeedsApproval)
 	if err != nil {
 		return err
 	}
@@ -88,6 +107,9 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 	defer eng.Close()
+	if o.OnEngine != nil {
+		o.OnEngine(eng)
+	}
 	apply := func(m *protocol.NetworkMap) {
 		if err := eng.Apply(m); err != nil {
 			log.Error("applying network map failed", "error", err)
@@ -224,7 +246,7 @@ func runStream(ctx context.Context, ctl *Control, eng *Engine, log *slog.Logger,
 }
 
 // waitForMap polls until the device is approved and returns its first map.
-func waitForMap(ctx context.Context, ctl *Control, log *slog.Logger) (*protocol.NetworkMap, error) {
+func waitForMap(ctx context.Context, ctl *Control, log *slog.Logger, onWait func()) (*protocol.NetworkMap, error) {
 	logged := false
 	for {
 		nm, err := ctl.Netmap(ctx, "")
@@ -235,6 +257,9 @@ func waitForMap(ctx context.Context, ctl *Control, log *slog.Logger) (*protocol.
 			if !logged {
 				log.Info("waiting for an admin to approve this device in the dashboard")
 				logged = true
+				if onWait != nil {
+					onWait()
+				}
 			}
 		case errors.Is(err, ErrUnauthorized):
 			return nil, err
@@ -245,6 +270,40 @@ func waitForMap(ctx context.Context, ctl *Control, log *slog.Logger) (*protocol.
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+// deviceCodeLogin runs the device-code flow: start, show the code, poll
+// until a user approves it in the dashboard. Expired codes are renewed.
+func deviceCodeLogin(ctx context.Context, ctl *Control, st *State, host, version string, show func(url, code string), log *slog.Logger) (string, error) {
+	for {
+		start, err := ctl.LoginStart(ctx, LoginStartRequest{
+			NodeKey: st.NodePrivate.Public().String(), DiscoKey: st.DiscoPrivate.Public().String(),
+			Hostname: host, OS: runtime.GOOS, ClientVersion: version,
+		})
+		if err != nil {
+			return "", fmt.Errorf("start login: %w", err)
+		}
+		show(start.VerifyURL, start.Code)
+		log.Info("waiting for login approval", "url", start.VerifyURL, "code", start.Code)
+		for {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(3 * time.Second):
+			}
+			cred, err := ctl.LoginPoll(ctx, start.PollToken)
+			if errors.Is(err, ErrLoginExpired) {
+				break // new code
+			}
+			if err != nil {
+				log.Warn("login poll failed; retrying", "error", err)
+				continue
+			}
+			if cred != "" {
+				return cred, nil
+			}
 		}
 	}
 }

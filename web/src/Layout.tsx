@@ -7,6 +7,7 @@ const nav = [
   { to: "/", label: "Overview", end: true },
   { to: "/devices", label: "Devices" },
   { to: "/devices/add", label: "Add device" },
+  { to: "/activate", label: "Activate device" },
   { to: "/status", label: "Network status" },
   { to: "/access", label: "Access control" },
   { to: "/members", label: "Users & roles" },

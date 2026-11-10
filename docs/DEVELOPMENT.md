@@ -97,6 +97,21 @@ In production Caddy serves the relay at `https://<domain>/relay` (port 443),
 so only UDP 3478 needs opening in addition. `wiremesh status` shows `relay`
 as the endpoint for relayed peers.
 
+## Phase 9: Linux client
+
+* `wiremeshd` (systemd service, `clients/linux/wiremeshd.service`, sandboxed to
+  network capabilities) owns the tunnel and serves a local API on
+  `/run/wiremesh/wiremeshd.sock` (root + `wiremesh` group).
+* `wiremesh up | down | status [--json] | logout` talk to it. `down` is
+  remembered across reboots. `wiremesh run` is the daemon-less foreground mode.
+* **Device-code login**: `wiremesh up --server URL` without an auth key prints
+  `https://<server>/activate?code=XXXX-XXXX`. Approving it in the dashboard
+  enrolls the device; approval by a network owner or admin also activates it.
+* **MagicDNS**: each device answers `<device>.<network-slug>.wm.internal` on
+  its tunnel address. With systemd-resolved, `resolvectl` routes that domain
+  there automatically.
+* Packaging: `make deb` (or `clients/linux/build-deb.sh <version> <arch>`).
+
 ## Phase 10: web dashboard
 
 ```bash

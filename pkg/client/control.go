@@ -208,3 +208,46 @@ func (c *Control) RelayToken(ctx context.Context) (string, error) {
 	}
 	return out.Token, nil
 }
+
+// LoginStartRequest starts a device-code login.
+type LoginStartRequest struct {
+	NodeKey       string `json:"node_key"`
+	DiscoKey      string `json:"disco_key"`
+	Hostname      string `json:"hostname"`
+	OS            string `json:"os"`
+	ClientVersion string `json:"client_version"`
+}
+
+// LoginStart is the server's reply.
+type LoginStart struct {
+	Code      string `json:"code"`
+	PollToken string `json:"poll_token"`
+	VerifyURL string `json:"verify_url"`
+}
+
+// ErrLoginExpired means the code expired (or was already used): start again.
+var ErrLoginExpired = errors.New("control: login code expired")
+
+// LoginStart begins a device-code login.
+func (c *Control) LoginStart(ctx context.Context, req LoginStartRequest) (*LoginStart, error) {
+	var out LoginStart
+	_, err := c.do(ctx, http.MethodPost, "/api/v1/device/login/start", req, &out, nil)
+	return &out, err
+}
+
+// LoginPoll returns the credential once approved, or "" while pending.
+func (c *Control) LoginPoll(ctx context.Context, pollToken string) (string, error) {
+	var out struct {
+		Status     string `json:"status"`
+		Credential string `json:"credential"`
+	}
+	_, err := c.do(ctx, http.MethodPost, "/api/v1/device/login/poll", map[string]string{"poll_token": pollToken}, &out, nil)
+	var ae *APIError
+	if errors.As(err, &ae) && ae.Status == http.StatusGone {
+		return "", ErrLoginExpired
+	}
+	if err != nil {
+		return "", err
+	}
+	return out.Credential, nil
+}

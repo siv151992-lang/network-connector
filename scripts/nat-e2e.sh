@@ -106,7 +106,7 @@ setup_net() { # NAT flags for site a, site b
 }
 
 log "build"
-(cd "$ROOT" && for b in wiremesh-server wiremesh wiremesh-relay; do go build -o "$WORK/$b" ./cmd/$b; done)
+(cd "$ROOT" && for b in wiremesh-server wiremesh wiremeshd wiremesh-relay; do go build -o "$WORK/$b" ./cmd/$b; done)
 ok "binaries built"
 
 setup_net "" ""
@@ -134,10 +134,12 @@ CASE=0
 start_clients() {
   CASE=$((CASE + 1))
   for s in a b; do
-    ip netns exec c-$s env WIREMESH_AUTH_KEY="$KEY" "$WORK/wiremesh" up --server $URL \
-      --state "$WORK/$s-$CASE.json" --iface wm$s$CASE --hostname "$s-case$CASE" --log-level debug \
-      >"$WORK/client-$s.log" 2>&1 &
+    ip netns exec c-$s "$WORK/wiremeshd" --state "$WORK/$s-$CASE.json" --socket "$WORK/$s-$CASE.sock" \
+      --iface wm$s$CASE --log-level debug >"$WORK/client-$s.log" 2>&1 &
     CLIENT_PIDS+=($!)
+    for _ in $(seq 50); do [ -S "$WORK/$s-$CASE.sock" ] && break; sleep 0.1; done
+    ip netns exec c-$s "$WORK/wiremesh" up --socket "$WORK/$s-$CASE.sock" --server $URL --auth-key "$KEY" \
+      --hostname "$s-case$CASE" --timeout 30s >/dev/null
   done
   sleep 1
 }
@@ -150,8 +152,8 @@ tun_ip() { ip netns exec c-$1 ip -4 -o addr show dev wm$1$CASE | awk '{print $4}
 has_tun_ip() { [ -n "$(tun_ip "$1" 2>/dev/null)" ]; }
 pings() { ip netns exec c-$1 ping -c1 -W1 "$2"; }
 path_of() { # client: the WireGuard path currently in use (wiremesh status --json)
-  ip netns exec c-$1 "$WORK/wiremesh" status --json --state "$WORK/$1-$CASE.json" --iface wm$1$CASE 2>/dev/null |
-    python3 -c "import sys,json;p=json.load(sys.stdin)['peers'];print(p[0].get('endpoint','') if p else '')"
+  ip netns exec c-$1 "$WORK/wiremesh" status --json --socket "$WORK/$1-$CASE.sock" 2>/dev/null |
+    python3 -c "import sys,json;p=json.load(sys.stdin)['peers'];print(p[0].get('path','') if p else '')"
 }
 path_is() { [ "$(path_of "$1")" = "$2" ]; }
 

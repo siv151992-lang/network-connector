@@ -1,26 +1,25 @@
-// Command wiremesh is the Linux client (Phase 4 foreground version; Phase 9
-// adds the wiremeshd systemd daemon, local API, DNS and packaging).
+// Command wiremesh controls the WireMesh daemon (wiremeshd / Windows service).
 //
-//	sudo wiremesh up --server https://vpn.example.com --auth-key wmk_…   # first run
-//	sudo wiremesh up                                                     # later runs
-//	sudo wiremesh status
-//	sudo wiremesh logout
+//	wiremesh up [--server URL] [--auth-key KEY]   connect (first time: login link or auth key)
+//	wiremesh down                                 disconnect (stays down after reboot)
+//	wiremesh status [--json]                      peers, paths, traffic
+//	wiremesh logout                               forget this device
+//	wiremesh run --server URL [--auth-key KEY]    foreground mode without a daemon (containers, tests)
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
-	"net/netip"
+	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -30,21 +29,24 @@ import (
 	"github.com/siv151992-lang/network-connector/pkg/protocol"
 )
 
-const defaultState = "/var/lib/wiremesh/state.json"
-
 func main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
 	var err error
+	args := os.Args[2:]
 	switch os.Args[1] {
 	case "up":
-		err = cmdUp(os.Args[2:])
-	case "status":
-		err = cmdStatus(os.Args[2:])
+		err = cmdUp(args)
+	case "down":
+		err = cmdSimple("down", args)
 	case "logout":
-		err = cmdLogout(os.Args[2:])
+		err = cmdSimple("logout", args)
+	case "status":
+		err = cmdStatus(args)
+	case "run":
+		err = cmdRun(args)
 	case "version", "--version":
 		fmt.Println("wiremesh", version.Version)
 	case "help", "-h", "--help":
@@ -62,26 +64,180 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: wiremesh <command> [flags]
 
-commands:
-  up       enroll (first run) and run the tunnel in the foreground
-  status   show this device, its peers and live WireGuard state
-  logout   revoke this device's credential and forget it
+  up       connect; the first time, pass --server and either follow the login
+           link or pass --auth-key (or WIREMESH_AUTH_KEY)
+  down     disconnect (stays disconnected across reboots)
+  status   show this device, peers, connection paths and traffic (--json)
+  logout   disconnect and forget this device (deletes its keys)
+  run      run the tunnel in the foreground without wiremeshd
   version`)
 }
 
+// --- daemon client ------------------------------------------------------------
+
+type daemonClient struct{ hc *http.Client }
+
+func newDaemonClient(sock string) *daemonClient {
+	return &daemonClient{hc: &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+		}},
+	}}
+}
+
+func (c *daemonClient) call(method, path string, body any) (*client.DaemonStatus, error) {
+	var rd io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rd = bytes.NewReader(b)
+	}
+	req, _ := http.NewRequest(method, "http://wiremeshd"+path, rd)
+	res, err := c.hc.Do(req)
+	if err != nil {
+		var opErr *net.OpError
+		if errors.As(err, &opErr) {
+			return nil, fmt.Errorf("cannot reach wiremeshd (is it running? `sudo systemctl start wiremeshd`; are you root or in the wiremesh group?): %w", err)
+		}
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		var e struct{ Error string }
+		_ = json.NewDecoder(res.Body).Decode(&e)
+		return nil, errors.New(e.Error)
+	}
+	var st client.DaemonStatus
+	return &st, json.NewDecoder(res.Body).Decode(&st)
+}
+
+func socketFlag(fs *flag.FlagSet) *string {
+	return fs.String("socket", client.DefaultSocketPath(), "wiremeshd socket")
+}
+
+// --- commands -------------------------------------------------------------------
+
 func cmdUp(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
-	server := fs.String("server", "", "control server URL, e.g. https://vpn.example.com (first run)")
-	authKey := fs.String("auth-key", "", "auth key for enrollment (first run); or set WIREMESH_AUTH_KEY to keep it out of `ps`")
-	state := fs.String("state", defaultState, "state file (private keys + credential)")
+	sock := socketFlag(fs)
+	server := fs.String("server", "", "control server URL (first time)")
+	authKey := fs.String("auth-key", os.Getenv("WIREMESH_AUTH_KEY"), "auth key for unattended enrollment (or WIREMESH_AUTH_KEY)")
+	hostname := fs.String("hostname", "", "device name (default: hostname)")
+	timeout := fs.Duration("timeout", 10*time.Minute, "how long to wait for login/connection")
+	_ = fs.Parse(args)
+	c := newDaemonClient(*sock)
+	st, err := c.call("POST", "/up", client.UpRequest{ServerURL: *server, AuthKey: *authKey, Hostname: *hostname})
+	if err != nil {
+		return err
+	}
+	shown := ""
+	deadline := time.Now().Add(*timeout)
+	for time.Now().Before(deadline) {
+		switch st.State {
+		case client.StateRunning:
+			fmt.Printf("connected to %q as %s (%s)\n", st.Network, st.Self.Name, join(st.Self.Addresses))
+			return nil
+		case client.StateNeedsLogin:
+			if st.LoginCode != shown {
+				shown = st.LoginCode
+				fmt.Printf("\nTo connect this device, open:\n\n    %s\n\nand confirm the code %s\n\n", st.LoginURL, st.LoginCode)
+			}
+		case client.StateNeedsApproval:
+			if shown != "approval" {
+				shown = "approval"
+				fmt.Println("enrolled; waiting for a network admin to approve this device in the dashboard…")
+			}
+		case client.StateError:
+			return errors.New(st.Error)
+		case client.StateStopped:
+			return errors.New("the tunnel stopped; see `journalctl -u wiremeshd`")
+		}
+		time.Sleep(time.Second)
+		if st, err = c.call("GET", "/status", nil); err != nil {
+			return err
+		}
+	}
+	return errors.New("timed out waiting for the connection")
+}
+
+func cmdSimple(cmd string, args []string) error {
+	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+	sock := socketFlag(fs)
+	_ = fs.Parse(args)
+	if _, err := newDaemonClient(*sock).call("POST", "/"+cmd, nil); err != nil {
+		return err
+	}
+	fmt.Println(map[string]string{"down": "disconnected", "logout": "logged out; this device's keys were deleted"}[cmd])
+	return nil
+}
+
+func cmdStatus(args []string) error {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	sock := socketFlag(fs)
+	asJSON := fs.Bool("json", false, "machine-readable output")
+	_ = fs.Parse(args)
+	st, err := newDaemonClient(*sock).call("GET", "/status", nil)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(st)
+	}
+	switch st.State {
+	case client.StateRunning:
+	case client.StateNeedsLogin:
+		fmt.Printf("waiting for login: open %s (code %s)\n", st.LoginURL, st.LoginCode)
+		return nil
+	case client.StateNeedsApproval:
+		fmt.Println("waiting for a network admin to approve this device")
+		return nil
+	case client.StateError:
+		fmt.Println("error:", st.Error)
+		return nil
+	default:
+		fmt.Println(st.State)
+		return nil
+	}
+	fmt.Printf("%s  %s  network %q", st.Self.Name, join(st.Self.Addresses), st.Network)
+	if st.Domain != "" {
+		fmt.Printf("  dns: *.%s", st.Domain)
+	}
+	fmt.Println()
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "\nPEER\tADDRESS\tSTATUS\tPATH\tHANDSHAKE\tRX\tTX")
+	for _, p := range st.Peers {
+		state, path, hs := "offline", p.Path, "never"
+		if p.Online {
+			state = "online"
+		}
+		if path == "" {
+			path = "-"
+		}
+		if p.LastHandshake != nil {
+			hs = time.Since(*p.LastHandshake).Round(time.Second).String() + " ago"
+		}
+		addr := ""
+		if len(p.Addresses) > 0 {
+			addr = p.Addresses[0]
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, addr, state, path, hs, bytesHuman(p.RxBytes), bytesHuman(p.TxBytes))
+	}
+	return tw.Flush()
+}
+
+// cmdRun is the daemon-less foreground mode (formerly `wiremesh up`).
+func cmdRun(args []string) error {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	server := fs.String("server", "", "control server URL (first run)")
+	authKey := fs.String("auth-key", os.Getenv("WIREMESH_AUTH_KEY"), "auth key (or WIREMESH_AUTH_KEY)")
+	state := fs.String("state", client.DefaultStatePath(), "state file (private keys + credential)")
 	iface := fs.String("iface", "wm0", "tunnel interface name")
 	port := fs.Uint("port", 51820, "WireGuard UDP listen port (0 = random)")
 	hostname := fs.String("hostname", "", "name to register (default: OS hostname)")
 	level := fs.String("log-level", "info", "debug|info|warn|error")
 	_ = fs.Parse(args)
-	if *authKey == "" {
-		*authKey = os.Getenv("WIREMESH_AUTH_KEY")
-	}
 	if *port > 65535 {
 		return errors.New("--port out of range")
 	}
@@ -90,12 +246,14 @@ func cmdUp(args []string) error {
 		return err
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	err := client.Run(ctx, client.Options{
 		ServerURL: *server, AuthKey: *authKey, StatePath: *state, InterfaceName: *iface,
 		ListenPort: uint16(*port), Hostname: *hostname, Version: version.Version, Log: log,
+		OnLogin: func(url, code string) {
+			fmt.Fprintf(os.Stderr, "\nTo connect this device, open %s and confirm the code %s\n\n", url, code)
+		},
 		OnMap: func(nm *protocol.NetworkMap) {
 			log.Info("network map applied", "self", nm.Self.Name, "peers", len(nm.Peers), "rules", len(nm.PacketFilter), "version", nm.Version)
 		},
@@ -106,144 +264,15 @@ func cmdUp(args []string) error {
 	return err
 }
 
-func cmdStatus(args []string) error {
-	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	state := fs.String("state", defaultState, "state file")
-	iface := fs.String("iface", "wm0", "tunnel interface name")
-	asJSON := fs.Bool("json", false, "machine-readable output")
-	_ = fs.Parse(args)
-
-	st, err := client.LoadState(*state)
-	if err != nil {
-		return err
-	}
-	ctl, err := client.NewControl(st.ServerURL, st.Credential, version.Version)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	nm, err := ctl.Netmap(ctx, "")
-	if errors.Is(err, client.ErrNotApproved) {
-		fmt.Println("enrolled; waiting for admin approval")
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	stats := readUAPI(*iface)
-	if *asJSON {
-		type peerJSON struct {
-			Name          string   `json:"name"`
-			Addresses     []string `json:"addresses"`
-			Online        bool     `json:"online"`
-			Endpoint      string   `json:"endpoint,omitempty"` // current WireGuard path
-			LastHandshake string   `json:"last_handshake,omitempty"`
-			RxBytes       uint64   `json:"rx_bytes"`
-			TxBytes       uint64   `json:"tx_bytes"`
+func join(s []string) string {
+	out := ""
+	for i, x := range s {
+		if i > 0 {
+			out += ", "
 		}
-		out := struct {
-			Self    string     `json:"self"`
-			Running bool       `json:"running"`
-			Peers   []peerJSON `json:"peers"`
-		}{Self: nm.Self.Name, Running: stats != nil, Peers: []peerJSON{}}
-		for _, p := range nm.Peers {
-			pj := peerJSON{Name: p.Name, Online: p.Online}
-			for _, a := range p.Addresses {
-				pj.Addresses = append(pj.Addresses, a.Addr().String())
-			}
-			if s, ok := stats[p.NodeKey]; ok {
-				if !strings.HasPrefix(s.Endpoint, "wm:") {
-					pj.Endpoint = s.Endpoint
-				}
-				if !s.LastHandshake.IsZero() {
-					pj.LastHandshake = s.LastHandshake.UTC().Format(time.RFC3339)
-				}
-				pj.RxBytes, pj.TxBytes = s.RxBytes, s.TxBytes
-			}
-			out.Peers = append(out.Peers, pj)
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+		out += x
 	}
-
-	fmt.Printf("%s  %s  network %q\n", nm.Self.Name, joinAddrs(nm.Self.Addresses), nm.Network.Name)
-	if stats == nil {
-		fmt.Println("tunnel: not running (start it with `wiremesh up`)")
-	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "\nPEER\tADDRESSES\tOS\tENDPOINT\tHANDSHAKE\tRX\tTX")
-	for _, p := range nm.Peers {
-		ep, hs, rx, tx := "-", "never", "-", "-"
-		if s, ok := stats[p.NodeKey]; ok {
-			if s.Endpoint != "" && !strings.HasPrefix(s.Endpoint, "wm:") {
-				ep = s.Endpoint
-			}
-			if !s.LastHandshake.IsZero() {
-				hs = time.Since(s.LastHandshake).Round(time.Second).String() + " ago"
-			}
-			rx, tx = bytesHuman(s.RxBytes), bytesHuman(s.TxBytes)
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, joinAddrs(p.Addresses), p.OS, ep, hs, rx, tx)
-	}
-	return tw.Flush()
-}
-
-func cmdLogout(args []string) error {
-	fs := flag.NewFlagSet("logout", flag.ExitOnError)
-	state := fs.String("state", defaultState, "state file")
-	_ = fs.Parse(args)
-	st, err := client.LoadState(*state)
-	if err != nil {
-		return err
-	}
-	ctl, err := client.NewControl(st.ServerURL, st.Credential, version.Version)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := ctl.Logout(ctx); err != nil && !errors.Is(err, client.ErrUnauthorized) {
-		return err
-	}
-	if err := os.Remove(*state); err != nil {
-		return err
-	}
-	fmt.Println("logged out; state removed")
-	return nil
-}
-
-// readUAPI queries a running tunnel over WireGuard's UAPI socket. It returns
-// nil if the tunnel isn't running.
-func readUAPI(iface string) map[protocol.Key]client.PeerStats {
-	c, err := net.DialTimeout("unix", filepath.Join("/var/run/wireguard", iface+".sock"), 2*time.Second)
-	if err != nil {
-		return nil
-	}
-	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
-	if _, err := c.Write([]byte("get=1\n\n")); err != nil {
-		return nil
-	}
-	var b strings.Builder
-	sc := bufio.NewScanner(c)
-	for sc.Scan() {
-		line := sc.Text()
-		if strings.HasPrefix(line, "errno=") {
-			break
-		}
-		b.WriteString(line + "\n")
-	}
-	return client.ParseUAPIStats(b.String())
-}
-
-func joinAddrs(ps []netip.Prefix) string {
-	var s []string
-	for _, p := range ps {
-		s = append(s, p.Addr().String())
-	}
-	return strings.Join(s, ", ")
+	return out
 }
 
 func bytesHuman(n uint64) string {

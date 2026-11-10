@@ -63,6 +63,8 @@ type Engine struct {
 	osc    OSConfigurator
 	uapi   io.Closer
 	ms     *magicsock.Conn
+	dns    DNSServer
+	dnsIP  netip.Addr
 
 	mu      sync.Mutex
 	peers   map[protocol.Key]peerConfig
@@ -178,6 +180,8 @@ func (e *Engine) Apply(nm *protocol.NetworkMap) error {
 	// transport's peer table, so WireGuard never sends to an unknown peer.
 	e.Filter.SetRules(nm.PacketFilter, nm.Self.Addresses)
 	e.ms.SetPeers(nm.Peers, nm.STUNServers, nm.Relays)
+
+	e.applyDNS(nm)
 
 	uapi, next := peerDiff(e.peers, nm.Peers)
 	if uapi != "" {
@@ -326,8 +330,42 @@ func (e *Engine) Close() error {
 	if e.osc != nil {
 		_ = e.osc.Close()
 	}
+	e.dns.Close()
 	e.dev.Close() // also closes the TUN device, which deletes the interface
 	e.ms.Shutdown()
 	e.log.Info("tunnel down")
 	return nil
 }
+
+// applyDNS keeps the MagicDNS server current and, when our tunnel address
+// changes, (re)binds it there and points the OS resolver at it for the
+// network's domain only.
+func (e *Engine) applyDNS(nm *protocol.NetworkMap) {
+	if nm.Network.Domain == "" {
+		return
+	}
+	e.dns.Update(nm)
+	var v4 netip.Addr
+	for _, p := range nm.Self.Addresses {
+		if p.Addr().Is4() {
+			v4 = p.Addr()
+		}
+	}
+	if !v4.IsValid() || v4 == e.dnsIP {
+		return
+	}
+	e.dns.Close()
+	if err := e.dns.Listen(netip.AddrPortFrom(v4, 53)); err != nil {
+		e.log.Warn("MagicDNS server not started", "error", err)
+		return
+	}
+	e.dnsIP = v4
+	if err := configureSystemDNS(e.ifname, v4, nm.Network.Domain); err != nil {
+		e.log.Info("MagicDNS is running, but the system resolver was not configured", "server", v4, "domain", nm.Network.Domain, "reason", err)
+	} else {
+		e.log.Info("MagicDNS configured", "server", v4, "domain", nm.Network.Domain)
+	}
+}
+
+// DNSAddr returns where the MagicDNS server listens (invalid if not running).
+func (e *Engine) DNSAddr() netip.Addr { return e.dnsIP }
