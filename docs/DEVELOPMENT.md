@@ -208,6 +208,20 @@ Invalid configuration aborts startup and lists every problem at once. In
 
 ---
 
+## Home/office LAN server on Windows (no domain)
+
+On a Windows PC with Docker Desktop, in an elevated PowerShell in `deploy/`:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\lan-setup.ps1 -Ip 192.168.1.100 -Email you@example.com
+```
+It generates `.env`, builds and starts the stack with `docker-compose.lan.yml`
+(plain HTTP on the IP, no certificate), opens TCP 80 / UDP 3478 in the
+firewall and creates the admin. Devices join with
+`wiremesh up --server http://192.168.1.100`. Open the dashboard at exactly
+`http://<that IP>` (the CSRF check compares the browser's origin with it).
+LAN only: the dashboard login isn't encrypted; device traffic still is
+(WireGuard).
+
 ## Production deployment on a VPS
 
 ### 1. Server and DNS

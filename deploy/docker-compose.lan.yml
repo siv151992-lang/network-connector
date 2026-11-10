@@ -1,0 +1,18 @@
+# Home/office LAN mode: plain HTTP on an IP address, no domain or certificate.
+# Use only on a trusted local network (traffic between devices is still
+# WireGuard-encrypted; the dashboard login is not).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d --build
+#
+# .env needs: WIREMESH_DOMAIN=<this machine's LAN IP>, POSTGRES_PASSWORD,
+# WIREMESH_SECRET_KEY, ACME_EMAIL (any value; unused).
+services:
+  server:
+    environment:
+      WIREMESH_ENV: development
+      WIREMESH_PUBLIC_URL: http://${WIREMESH_DOMAIN}
+      WIREMESH_REQUIRE_EMAIL_VERIFICATION: "false"
+      WIREMESH_RELAY_URLS: http://${WIREMESH_DOMAIN}/relay
+  caddy:
+    environment:
+      WIREMESH_DOMAIN: http://${WIREMESH_DOMAIN}
