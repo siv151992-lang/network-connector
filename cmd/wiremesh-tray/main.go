@@ -96,26 +96,35 @@ func onReady() {
 			disconnect.Hide()
 		}
 	}
-	// connectTo asks for the server address when needed and starts the tunnel.
-	connectTo := func(ask bool) {
-		server := ""
-		if ask {
-			cur := ""
-			if last != nil {
-				cur = last.ServerURL
-			}
-			s, ok := askServer(cur)
-			if !ok {
-				return
-			}
-			server = s
+	// The address dialog runs in its own goroutine so the menu stays usable;
+	// its answer comes back on typed.
+	typed := make(chan string, 1)
+	asking := false
+	ask := func() {
+		if asking {
+			return
+		}
+		asking = true
+		cur := ""
+		if last != nil {
+			cur = last.ServerURL
+		}
+		status.SetTitle("Enter the server address in the window that opened…")
+		go func() {
+			s, _ := askServer(cur)
+			typed <- s // "" = cancelled
+		}()
+	}
+	// connect starts the tunnel; server is what the user typed ("" = saved server).
+	connectTo := func(server string) {
+		if server != "" {
 			// Switching servers: leave the old one (forgets this device there).
-			if last != nil && last.ServerURL != "" && !sameServer(last.ServerURL, s) {
+			if last != nil && last.ServerURL != "" && !sameServer(last.ServerURL, server) {
 				_, _ = lc.Call("POST", "/logout", nil)
 			} else {
 				_, _ = lc.Call("POST", "/down", nil) // restart with the address as typed
 			}
-			status.SetTitle("Connecting to " + s + "…")
+			status.SetTitle("Connecting to " + server + "…")
 		}
 		if _, err := lc.Call("POST", "/up", client.UpRequest{ServerURL: server}); err != nil {
 			status.SetTitle("Connect failed: " + err.Error())
@@ -127,7 +136,7 @@ func onReady() {
 	refresh()
 	// First run: no server configured yet, so ask right away.
 	if last != nil && last.ServerURL == "" && last.State == client.StateStopped {
-		go connectTo(true)
+		ask()
 	}
 	tick := time.NewTicker(3 * time.Second)
 	go func() {
@@ -136,9 +145,20 @@ func onReady() {
 			case <-tick.C:
 				refresh()
 			case <-connect.ClickedCh:
-				connectTo(last == nil || last.ServerURL == "" || last.State == client.StateError)
+				if last == nil || last.ServerURL == "" || last.State == client.StateError {
+					ask()
+				} else {
+					connectTo("")
+				}
 			case <-change.ClickedCh:
-				connectTo(true)
+				ask()
+			case s := <-typed:
+				asking = false
+				if s != "" {
+					connectTo(s)
+				} else {
+					refresh()
+				}
 			case <-disconnect.ClickedCh:
 				_, _ = lc.Call("POST", "/down", nil)
 				refresh()
