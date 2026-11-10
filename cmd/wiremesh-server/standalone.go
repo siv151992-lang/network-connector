@@ -138,7 +138,7 @@ func setDefault(k, v string) {
 	}
 }
 
-func standalone(ctx context.Context, o standaloneOpts) error {
+func standalone(ctx context.Context, o standaloneOpts) (err error) {
 	if runtime.GOOS != "windows" && os.Geteuid() == 0 {
 		return errors.New("PostgreSQL refuses to run as root: run standalone mode as a regular user (e.g. a 'wiremesh' system user)")
 	}
@@ -154,6 +154,13 @@ func standalone(ctx context.Context, o standaloneOpts) error {
 	}
 	defer logFile.Close()
 	logOut := io.MultiWriter(os.Stderr, logFile)
+	fmt.Fprintf(logFile, "%s starting WireMesh standalone server\n", time.Now().Format(time.RFC3339))
+	// A Windows service has no console: make sure a fatal error lands in the log.
+	defer func() {
+		if err != nil {
+			fmt.Fprintf(logFile, "%s FATAL: %v\n", time.Now().Format(time.RFC3339), err)
+		}
+	}()
 
 	secret, err := readOrCreate(filepath.Join(o.Data, "secret.key"), randomString(32, base64.StdEncoding.EncodeToString))
 	if err != nil {
