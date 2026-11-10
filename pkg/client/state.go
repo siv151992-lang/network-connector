@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/siv151992-lang/network-connector/pkg/protocol"
 )
@@ -46,7 +47,9 @@ func LoadOrCreateState(path, serverURL string) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
-	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm()&0o077 != 0 {
+	// Unix permission bits only; on Windows the file is protected by the
+	// state directory's ACL (SYSTEM + Administrators, set by wiremeshd).
+	if fi, err := os.Stat(path); err == nil && runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("%s is readable by other users (mode %o); it contains private keys: chmod 600 it", path, fi.Mode().Perm())
 	}
 	var st State

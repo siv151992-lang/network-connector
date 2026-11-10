@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -267,6 +268,9 @@ func TestStateFile(t *testing.T) {
 	}
 	if _, err := LoadOrCreateState(path, "https://other.example.com"); err == nil {
 		t.Fatal("state for another server accepted")
+	}
+	if runtime.GOOS == "windows" {
+		return // protected by the directory ACL, not mode bits
 	}
 	_ = os.Chmod(path, 0o644)
 	if _, err := LoadOrCreateState(path, ""); err == nil || !strings.Contains(err.Error(), "readable by other users") {
