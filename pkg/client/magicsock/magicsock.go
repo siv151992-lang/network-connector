@@ -10,9 +10,9 @@
 //   - a path is a peer address confirmed by an authenticated disco pong (or
 //     ping) within the last pathTTL;
 //   - the best path is the lowest-latency confirmed one (with hysteresis);
-//   - with no confirmed path, WireGuard packets are held back (dropped; WireGuard
-//     retries) while magicsock discovers one. Spraying them at unconfirmed
-//     public addresses would break hole punching (see below).
+//   - with no confirmed path, WireGuard packets go through the relay while
+//     magicsock discovers one (never sprayed at unconfirmed public addresses,
+//     which would break hole punching; see below).
 //
 // Hole punching through Linux-style NATs (most home routers): if our first
 // packet reaches the peer's NAT before the peer has an outbound mapping to us,
@@ -41,7 +41,8 @@
 // private LAN addresses collide across sites. Packets from unknown addresses
 // are dropped until disco verifies them, which takes milliseconds.
 //
-// Relay fallback (when no direct path can be found) arrives in Phase 6.
+// When no direct path is confirmed, packets go through the home relay (see
+// relay.go).
 package magicsock
 
 import (
@@ -71,10 +72,10 @@ import (
 
 // Timing (exported for documentation; tests shorten them via Options).
 const (
-	DefaultPathTTL     = 15 * time.Second // a path with no pong for this long is stale
-	DefaultHeartbeat   = 5 * time.Second  // ping the best path this often
-	DefaultProbeEvery  = 5 * time.Second  // while pathless, re-probe all candidates this often
-	DefaultCMMEvery    = 5 * time.Second  // and send call-me-maybe at most this often
+	DefaultPathTTL     = 8 * time.Second // a path with no pong for this long is stale (relay covers the gap)
+	DefaultHeartbeat   = 3 * time.Second // ping the best path this often
+	DefaultProbeEvery  = 5 * time.Second // while pathless, re-probe all candidates this often
+	DefaultCMMEvery    = 5 * time.Second // and send call-me-maybe at most this often
 	DefaultSTUNEvery   = 20 * time.Second
 	reflexiveTTL       = 45 * time.Second // > 2 STUN rounds: stale public addresses age out fast after roaming
 	pingTimeout        = 10 * time.Second
@@ -110,6 +111,8 @@ type Options struct {
 	Log          *slog.Logger
 
 	PathTTL, Heartbeat, ProbeEvery, CMMEvery, STUNEvery time.Duration
+	// RelayToken fetches a relay token from the control server (nil: no relay).
+	RelayToken func(ctx context.Context) (string, error)
 	// LocalAddrs overrides interface enumeration (tests).
 	LocalAddrs func() []netip.Addr
 }
@@ -136,6 +139,13 @@ type Conn struct {
 	onEndpoints func()
 	sendCMM     func(to protocol.Key, eps []netip.AddrPort, quiesce bool)
 
+	relayURL    string
+	relayUp     atomic.Bool
+	relayIn     chan relayPkt
+	relayOut    chan []byte
+	relayChange chan struct{}
+	closing     chan struct{} // closed when wireguard-go closes the bind
+
 	wake   chan struct{}
 	stop   chan struct{}
 	closed atomic.Bool
@@ -145,7 +155,8 @@ type Conn struct {
 	DroppedUnknown atomic.Uint64
 	DiscoRx        atomic.Uint64
 	Direct         atomic.Uint64 // WireGuard packets sent over a confirmed path
-	NoPath         atomic.Uint64 // WireGuard packets held back while no path is confirmed
+	NoPath         atomic.Uint64 // WireGuard packets dropped: no direct path and no relay
+	Relayed        atomic.Uint64 // WireGuard packets sent via the relay
 	Punches        atomic.Uint64 // low-TTL hole-punching probes sent
 }
 
@@ -208,8 +219,10 @@ func New(o Options) *Conn {
 		peers: map[protocol.Key]*peer{}, byDisco: map[protocol.Key]*peer{}, verified: map[netip.AddrPort]*peer{},
 		stunTx: map[stun.TxID]time.Time{}, reflexive: map[netip.AddrPort]time.Time{},
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), now: time.Now,
+		relayIn: make(chan relayPkt, 512), relayOut: make(chan []byte, 512), relayChange: make(chan struct{}, 1),
 	}
 	go c.loop()
+	go c.relayLoop()
 	return c
 }
 
@@ -269,6 +282,8 @@ func (c *Conn) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	if len(fns) == 0 {
 		return nil, 0, syscall.EAFNOSUPPORT
 	}
+	c.closing = make(chan struct{})
+	fns = append(fns, c.relayReceiver(c.closing))
 	c.o.Port = port
 	c.stunNow.Store(true) // sockets exist now: discover our public endpoint immediately
 	c.poke()
@@ -286,6 +301,10 @@ func (c *Conn) Close() error {
 	if c.pc6 != nil {
 		c.pc6.Close()
 		c.pc6 = nil
+	}
+	if c.closing != nil {
+		close(c.closing)
+		c.closing = nil
 	}
 	return nil
 }
@@ -375,10 +394,14 @@ func (c *Conn) Send(bufs [][]byte, ep conn.Endpoint) error {
 			return fmt.Errorf("magicsock: unknown peer")
 		}
 		if !best.IsValid() {
-			// No confirmed path yet: hold back (see package doc) and make
-			// sure discovery is running. WireGuard retransmits.
-			c.NoPath.Add(uint64(len(bufs)))
+			// No confirmed direct path: use the relay (discovery keeps
+			// running and takes over when it succeeds).
 			c.poke()
+			for _, b := range bufs {
+				if !c.sendRelay(e.key, b) {
+					c.NoPath.Add(1)
+				}
+			}
 			return nil
 		}
 		for _, b := range bufs {
@@ -476,6 +499,9 @@ func (e *peerEndpoint) DstToString() string {
 	if b := e.best(); b.IsValid() {
 		return b.String()
 	}
+	if e.c.relayUp.Load() {
+		return "relay"
+	}
 	return "wm:" + e.key.Hex()
 }
 func (e *peerEndpoint) DstIP() netip.Addr { return e.best().Addr() }
@@ -498,7 +524,7 @@ func (e addrEndpoint) DstToBytes() []byte {
 
 // SetPeers replaces the peer table from a network map. Paths to peers that
 // remain are kept, so a map update never interrupts traffic.
-func (c *Conn) SetPeers(nodes []protocol.Node, stunServers []string) {
+func (c *Conn) SetPeers(nodes []protocol.Node, stunServers []string, relays []protocol.Relay) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	seen := map[protocol.Key]bool{}
@@ -536,6 +562,7 @@ func (c *Conn) SetPeers(nodes []protocol.Node, stunServers []string) {
 			delete(c.peers, k)
 		}
 	}
+	c.setRelays(relays)
 	if !slices.Equal(c.stunServers, stunServers) {
 		c.stunServers = slices.Clone(stunServers)
 		c.stunNow.Store(true) // learn our public endpoint right away
@@ -684,7 +711,17 @@ func (c *Conn) quietLocked(p *peer, t netip.AddrPort, now time.Time) bool {
 	return false
 }
 
+// preparePingBackLocked answers an authenticated ping with a ping of our own.
+// It is a reply, so it never counts toward quiescing.
+func (c *Conn) preparePingBackLocked(p *peer, to netip.AddrPort) []outPkt {
+	return c.preparePingsOptLocked(p, []netip.AddrPort{to}, 0, false)
+}
+
 func (c *Conn) preparePingsTTLLocked(p *peer, targets []netip.AddrPort, ttl int) []outPkt {
+	return c.preparePingsOptLocked(p, targets, ttl, true)
+}
+
+func (c *Conn) preparePingsOptLocked(p *peer, targets []netip.AddrPort, ttl int, count bool) []outPkt {
 	now := c.now()
 	var out []outPkt
 	for _, t := range targets {
@@ -694,7 +731,7 @@ func (c *Conn) preparePingsTTLLocked(p *peer, targets []netip.AddrPort, ttl int)
 		if c.quietLocked(p, t, now) {
 			continue
 		}
-		if ttl == 0 && t != p.best {
+		if count && ttl == 0 && t != p.best && !c.fresh(p, p.best) {
 			u := p.unanswered[t]
 			if now.Sub(u.last) > unansweredReset {
 				u.n = 0
@@ -753,7 +790,7 @@ func (c *Conn) handleDisco(b []byte, src netip.AddrPort) {
 		if !c.fresh(p, src) {
 			// New or stale address (peer roamed, or a NAT hole just opened):
 			// probe it back so it becomes a confirmed path right away.
-			out = append(out, c.preparePingsLocked(p, []netip.AddrPort{src})...)
+			out = append(out, c.preparePingBackLocked(p, src)...)
 		}
 	case disco.TypePong:
 		pd, ok := p.pending[msg.TxID]
@@ -762,8 +799,10 @@ func (c *Conn) handleDisco(b []byte, src netip.AddrPort) {
 			return // unsolicited, or answered from an unexpected address
 		}
 		delete(p.pending, msg.TxID)
-		delete(p.unanswered, src)
-		delete(p.quiet, src)
+		// A pong proves the path works: cancel any quiescing toward this peer.
+		p.unanswered = map[netip.AddrPort]unanswered{}
+		p.quiet = map[netip.AddrPort]time.Time{}
+		p.sendQuiet = false
 		pt := c.learnLocked(p, src)
 		pt.lastPong = now
 		pt.latency = now.Sub(pd.sent)

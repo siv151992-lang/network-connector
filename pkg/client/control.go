@@ -199,3 +199,12 @@ func (c *Control) Logout(ctx context.Context) error {
 	_, err := c.do(ctx, http.MethodPost, "/api/v1/device/logout", nil, nil, nil)
 	return err
 }
+
+// RelayToken fetches a short-lived token for the relays.
+func (c *Control) RelayToken(ctx context.Context) (string, error) {
+	var out protocol.RelayToken
+	if _, err := c.do(ctx, http.MethodPost, "/api/v1/device/relay-token", map[string]any{}, &out, nil); err != nil {
+		return "", err
+	}
+	return out.Token, nil
+}

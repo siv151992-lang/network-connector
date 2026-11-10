@@ -103,6 +103,8 @@ type NetworkMap struct {
 	PacketFilter []FilterRule `json:"packet_filter"`
 	// STUNServers are host:port addresses for public-endpoint discovery.
 	STUNServers []string `json:"stun_servers,omitempty"`
+	// Relays carry traffic between peers with no direct path (Phase 6).
+	Relays []Relay `json:"relays,omitempty"`
 	// PollInterval tells Phase 4 clients how often to refresh (Phase 5
 	// replaces polling with a WebSocket push stream).
 	PollInterval Duration `json:"poll_interval"`
@@ -234,4 +236,16 @@ type CallMeMaybe struct {
 	// period, so stale NAT state on both sides expires before a fresh,
 	// synchronized hole-punching attempt (see pkg/client/magicsock).
 	Quiesce bool `json:"quiesce,omitempty"`
+}
+
+// Relay is a packet relay a device can use when no direct path exists.
+type Relay struct {
+	ID  int    `json:"id"`
+	URL string `json:"url"` // https://host/relay (WebSocket)
+}
+
+// RelayToken is returned by POST /api/v1/device/relay-token.
+type RelayToken struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
 }

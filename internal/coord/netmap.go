@@ -32,6 +32,8 @@ type Builder struct {
 	Now   func() time.Time
 	// STUNServers are advertised to devices for endpoint discovery.
 	STUNServers []string
+	// Relays are advertised to devices.
+	Relays []protocol.Relay
 	// Online reports live presence (set by the Hub); nil means unknown/offline.
 	Online func(uuid.UUID) bool
 }
@@ -112,6 +114,7 @@ func (b *Builder) Build(ctx context.Context, self *store.Device) (*protocol.Netw
 		PacketFilter: []protocol.FilterRule{},
 		PollInterval: protocol.Duration(PollInterval),
 		STUNServers:  b.STUNServers,
+		Relays:       b.Relays,
 	}
 	if self.KeyExpiresAt != nil && !b.Now().Before(*self.KeyExpiresAt) {
 		// An expired device gets no peers until it rotates its key.

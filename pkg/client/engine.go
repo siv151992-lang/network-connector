@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
@@ -40,6 +41,7 @@ type EngineConfig struct {
 	InterfaceName string // e.g. "wm0"
 	PrivateKey    protocol.PrivateKey
 	DiscoPrivate  protocol.PrivateKey
+	RelayToken    func(ctx context.Context) (string, error)
 	ListenPort    uint16 // 0 picks a random port
 	MTU           int
 	Log           *slog.Logger
@@ -96,7 +98,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	e := &Engine{log: cfg.Log.With("iface", name), tun: tdev, Filter: NewFilter(), ifname: name,
 		peers: map[protocol.Key]peerConfig{}, stopped: make(chan struct{})}
 	e.ms = magicsock.New(magicsock.Options{Port: cfg.ListenPort, DiscoPrivate: cfg.DiscoPrivate,
-		NodeKey: cfg.PrivateKey.Public(), ExcludeIface: name, Log: e.log})
+		NodeKey: cfg.PrivateKey.Public(), ExcludeIface: name, Log: e.log, RelayToken: cfg.RelayToken})
 
 	logger := &device.Logger{
 		Verbosef: func(format string, args ...any) { e.log.Debug("wireguard: " + fmt.Sprintf(format, args...)) },
@@ -175,7 +177,7 @@ func (e *Engine) Apply(nm *protocol.NetworkMap) error {
 	// Filter first, so newly added peers are never unfiltered; then the
 	// transport's peer table, so WireGuard never sends to an unknown peer.
 	e.Filter.SetRules(nm.PacketFilter, nm.Self.Addresses)
-	e.ms.SetPeers(nm.Peers, nm.STUNServers)
+	e.ms.SetPeers(nm.Peers, nm.STUNServers, nm.Relays)
 
 	uapi, next := peerDiff(e.peers, nm.Peers)
 	if uapi != "" {

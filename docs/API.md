@@ -115,6 +115,7 @@ minutes. Responses during lockout look like a wrong password.
 | `POST /device/endpoints` | device | `{endpoints: ["192.0.2.1:51820", …], listen_port}`: where peers can reach this device (max 16; loopback, link-local, multicast rejected) |
 
 | `GET /device/stream` | device | WebSocket control stream, see below |
+| `POST /device/relay-token` | device (approved) | `{token, expires_at}`: 10-minute Ed25519-signed token bound to the device key and network, presented to relays |
 
 Planned: (WebSocket network map, Phase 5),
 `POST /device/relay-token` (Phase 6), and the device-code login flow for

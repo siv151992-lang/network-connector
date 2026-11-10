@@ -14,10 +14,10 @@
 #   1. NAT <-> NAT (Linux MASQUERADE on both sides, port-preserving): hole
 #      punched, direct path through both NATs; then site A's public IP
 #      changes (roaming) and the tunnel recovers on its own.
-#   2. NAT <-> symmetric NAT (--random-fully: new random port per destination)
-#      with address-and-port-dependent filtering on the other side: no direct
-#      path is possible; asserts that none forms. This is what the Phase 6
-#      relay is for.
+#      With the relay, the tunnel comes back within seconds and then moves to
+#      the new direct path.
+#   2. NAT <-> symmetric NAT (--random-fully: new random port per destination):
+#      no direct path is possible, so traffic flows through the relay.
 #
 # Usage: sudo WIREMESH_TEST_DATABASE_URL=postgres://user@host:5432/postgres scripts/nat-e2e.sh
 set -euo pipefail
@@ -111,13 +111,14 @@ ok "binaries built"
 
 setup_net "" ""
 
-log "control server + STUN"
-"$WORK/wiremesh-relay" --stun-addr 198.18.99.1:3478 >"$WORK/relay.log" 2>&1 & PIDS+=($!)
+log "control server + STUN + relay"
 psql "$DB_ADMIN" -qc "CREATE DATABASE $DB_NAME" >/dev/null
 export WIREMESH_DATABASE_URL=$(python3 -c "import sys,urllib.parse as u;p=u.urlparse(sys.argv[1]);print(p._replace(path='/$DB_NAME').geturl())" "$DB_ADMIN")
 export WIREMESH_HTTP_ADDR=198.18.99.1:18091 WIREMESH_PUBLIC_URL=$URL WIREMESH_LOG_FORMAT=text \
        WIREMESH_SECRET_KEY=$(head -c32 /dev/urandom | base64) WIREMESH_AUTH_RATE_LIMIT_PER_MIN=600 \
-       WIREMESH_STUN_SERVERS=198.18.99.1:3478
+       WIREMESH_STUN_SERVERS=198.18.99.1:3478 WIREMESH_RELAY_URLS=http://198.18.99.1:8443/relay
+"$WORK/wiremesh-relay" --stun-addr 198.18.99.1:3478 --relay-addr 198.18.99.1:8443 \
+  --control-key "$("$WORK/wiremesh-server" relay-pubkey)" >"$WORK/relay.log" 2>&1 & PIDS+=($!)
 WIREMESH_ADMIN_PASSWORD="$PASS" "$WORK/wiremesh-server" create-admin --email admin@example.com >/dev/null
 "$WORK/wiremesh-server" serve >"$WORK/server.log" 2>&1 & PIDS+=($!)
 for _ in $(seq 50); do curl -fs $URL/readyz >/dev/null && break; sleep 0.2; done
@@ -127,7 +128,7 @@ CSRF=$(curl -fs -c "$WORK/jar" -H 'Content-Type: application/json' \
 call() { curl -fsS -b "$WORK/jar" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' "$@"; }
 NID=$(call -d '{"name":"NAT Test"}' $API/networks | json "['network']['id']")
 KEY=$(call -d '{"reusable":true,"preauthorized":true,"ephemeral":true}' $API/networks/$NID/auth-keys | json "['key']")
-ok "server, STUN and network ready"
+ok "server, STUN, relay and network ready"
 
 CASE=0
 start_clients() {
@@ -188,8 +189,8 @@ if [ -n "${WIREMESH_TEST_CONNTRACK:-}" ]; then
   ( while sleep 10; do for r in r-a r-b; do echo "--- $(date +%T) $r"; ip netns exec $r cat /proc/net/nf_conntrack 2>/dev/null | grep 51820 | sed -E 's/^ipv4 +2 +udp +17 +//; s/ mark=0 zone=0 use=[0-9]+//'; done; done >"$WORK/conntrack.log" 2>&1 ) &
   PIDS+=($!)
 fi
-wait_for 100 "tunnel recovered after the address change (A -> B)" pings a "$B"
-wait_for 30 "B now uses A's new public address" path_is b 198.18.1.3:51820
+wait_for 30 "tunnel recovered via the relay after the address change (A -> B)" pings a "$B"
+wait_for 100 "direct path re-established: B uses A's new public address" path_is b 198.18.1.3:51820
 wait_for 60 "control stream reconnected from the new address" grep -q "control stream connected" <(grep -A1000 "control stream down" "$WORK/client-a.log")
 stop_clients
 
@@ -199,9 +200,11 @@ log "case 2: NAT <-> symmetric NAT (random port per destination)"
 setup_net "" "--random-fully"
 start_clients
 wait_for 20 "both clients configured" sh -c "$(declare -f has_tun_ip tun_ip); CASE=$CASE; has_tun_ip a && has_tun_ip b"
-B=$(tun_ip b)
-never 25 "no direct path is possible (needs the Phase 6 relay)" pings a "$B"
-grep -q "direct path selected" "$WORK/client-a.log" && fail "a direct path was unexpectedly selected" || ok "magicsock correctly reports no direct path"
+A=$(tun_ip a); B=$(tun_ip b)
+wait_for 20 "ping A -> B through the relay" pings a "$B"
+wait_for 10 "ping B -> A through the relay" pings b "$A"
+wait_for 10 "A's path to B is the relay" path_is a relay
+grep -q "direct path selected" "$WORK/client-a.log" && fail "a direct path was unexpectedly selected" || ok "no direct path (symmetric NAT), relay carries the traffic"
 stop_clients
 
 log "ALL CHECKS PASSED"

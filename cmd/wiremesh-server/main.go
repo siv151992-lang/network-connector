@@ -14,7 +14,9 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -35,6 +37,7 @@ import (
 	"github.com/siv151992-lang/network-connector/internal/secretbox"
 	"github.com/siv151992-lang/network-connector/internal/store"
 	"github.com/siv151992-lang/network-connector/internal/version"
+	"github.com/siv151992-lang/network-connector/pkg/relayproto"
 )
 
 func main() {
@@ -53,6 +56,20 @@ func run(args []string) error {
 	case "version", "-v", "--version":
 		v := version.Get()
 		fmt.Printf("wiremesh-server %s (commit %s, built %s, %s)\n", v.Version, v.Commit, v.BuildDate, v.GoVersion)
+		return nil
+	case "relay-pubkey":
+		cfg, err := config.Load()
+		if err != nil {
+			return fmt.Errorf("invalid configuration:\n%w", err)
+		}
+		if cfg.SecretKey == nil {
+			return errors.New("WIREMESH_SECRET_KEY must be set: the relay key is derived from it")
+		}
+		k, err := relayproto.SigningKey(cfg.SecretKey)
+		if err != nil {
+			return err
+		}
+		fmt.Println(base64.StdEncoding.EncodeToString(k.Public().(ed25519.PublicKey)))
 		return nil
 	case "serve", "migrate", "create-admin":
 	case "help", "-h", "--help":

@@ -17,6 +17,7 @@ import (
 	"github.com/siv151992-lang/network-connector/internal/secretbox"
 	"github.com/siv151992-lang/network-connector/internal/store"
 	"github.com/siv151992-lang/network-connector/internal/version"
+	"github.com/siv151992-lang/network-connector/pkg/protocol"
 )
 
 // Pinger checks a dependency's health (implemented by *pgxpool.Pool).
@@ -181,5 +182,9 @@ func NewHub(st *store.Store, cfg *config.Config, log *slog.Logger, now func() ti
 	if now == nil {
 		now = time.Now
 	}
-	return coord.NewHub(&coord.Builder{Store: st, Now: now, STUNServers: cfg.STUNServers}, log)
+	var relays []protocol.Relay
+	for i, u := range cfg.RelayURLs {
+		relays = append(relays, protocol.Relay{ID: i + 1, URL: u})
+	}
+	return coord.NewHub(&coord.Builder{Store: st, Now: now, STUNServers: cfg.STUNServers, Relays: relays}, log)
 }

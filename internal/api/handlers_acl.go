@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/siv151992-lang/network-connector/internal/acl"
 	"github.com/siv151992-lang/network-connector/internal/api/httpx"
 	"github.com/siv151992-lang/network-connector/internal/coord"
 	"github.com/siv151992-lang/network-connector/internal/store"
 	"github.com/siv151992-lang/network-connector/pkg/protocol"
+	"github.com/siv151992-lang/network-connector/pkg/relayproto"
 )
 
 func (s *Server) aclRoutes(mux *http.ServeMux) {
@@ -22,6 +24,7 @@ func (s *Server) aclRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/device/netmap", s.handle(s.device(s.handleNetmap)))
 	mux.HandleFunc("POST /api/v1/device/endpoints", s.handle(s.device(s.handleEndpoints)))
 	mux.HandleFunc("GET /api/v1/device/stream", s.handle(s.device(s.handleStream)))
+	mux.HandleFunc("POST /api/v1/device/relay-token", s.handle(s.device(s.handleRelayToken)))
 }
 
 func policyError(err error) error {
@@ -215,5 +218,28 @@ func (s *Server) handleEndpoints(w http.ResponseWriter, r *http.Request, d *stor
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+const relayTokenTTL = 10 * time.Minute
+
+// handleRelayToken mints a short-lived token that lets this device use the
+// relays, scoped to its node key and network.
+func (s *Server) handleRelayToken(w http.ResponseWriter, r *http.Request, d *store.Device) error {
+	if d.Status != store.DeviceStatusApproved {
+		return httpx.Forbidden("device is not approved")
+	}
+	key, err := relayproto.SigningKey(s.cfg.SecretKey)
+	if err != nil {
+		return err
+	}
+	var nk protocol.Key
+	copy(nk[:], d.NodeKey)
+	exp := s.now().Add(relayTokenTTL)
+	tok, err := relayproto.Sign(key, relayproto.Claims{NodeKey: nk, NetworkID: d.NetworkID.String(), Expires: exp.Unix()})
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, protocol.RelayToken{Token: tok, ExpiresAt: exp})
 	return nil
 }

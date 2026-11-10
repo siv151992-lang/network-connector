@@ -4,12 +4,12 @@ A self-hostable private mesh VPN built on WireGuard: a Go control server
 coordinates your devices, and traffic flows end-to-end encrypted directly
 between them, or through an encrypted relay when NATs block direct paths.
 
-> **Status: Phases 1–5 complete.** Accounts, networks, roles, auth keys and
+> **Status: Phases 1–6 complete.** Accounts, networks, roles, auth keys and
 > device enrollment work over the API. The Linux client brings up **real
 > WireGuard tunnels** with ACL-enforced packet filtering, pushes and receives
 > changes instantly over a control stream, and connects devices **directly
-> through NATs** (STUN + hole punching). The relay fallback for NATs that
-> can't be traversed (symmetric/CGNAT) comes in Phase 6.
+> through NATs** (STUN + hole punching), falling back to an encrypted relay
+> when no direct path exists (symmetric NAT/CGNAT, blocked UDP).
 > See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 * [Architecture, schema, API design](docs/ARCHITECTURE.md)
@@ -37,7 +37,8 @@ make run      # then follow the curl walkthrough in docs/API.md
 ```
 cmd/wiremesh-server   control server entrypoint (serve | migrate | create-admin | version)
 cmd/wiremesh          Linux client (up | status [--json] | logout)
-cmd/wiremesh-relay    STUN server (Phase 5); packet relay (Phase 6)
+cmd/wiremesh-relay    STUN server + encrypted packet relay
+relay, pkg/relayproto relay server; relay frames and Ed25519 relay tokens
 pkg/client/magicsock  WireGuard transport: one socket for WireGuard/disco/STUN, path selection, hole punching
 pkg/stun, pkg/disco   STUN codec/server; encrypted path-discovery messages
 pkg/protocol          wire types shared by server and clients (NetworkMap, keys, filter rules)

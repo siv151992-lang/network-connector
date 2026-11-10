@@ -60,6 +60,8 @@ type Config struct {
 
 	// STUN servers (host:port) advertised to devices for NAT traversal.
 	STUNServers []string
+	// Relay URLs (https://host/relay) advertised to devices (Phase 6).
+	RelayURLs []string
 }
 
 // IsProduction reports whether the server runs in production mode.
@@ -101,6 +103,7 @@ func LoadFrom(lookup func(string) (string, bool)) (*Config, error) {
 		SMTPFrom:     g.str("WIREMESH_SMTP_FROM", ""),
 		SMTPTLS:      strings.ToLower(g.str("WIREMESH_SMTP_TLS", "starttls")),
 		STUNServers:  g.list("WIREMESH_STUN_SERVERS"),
+		RelayURLs:    g.list("WIREMESH_RELAY_URLS"),
 	}
 
 	var errs []error
@@ -214,6 +217,18 @@ func LoadFrom(lookup func(string) (string, bool)) (*Config, error) {
 		if p, perr := strconv.Atoi(port); err != nil || host == "" || perr != nil || p < 1 || p > 65535 {
 			errs = append(errs, fmt.Errorf("WIREMESH_STUN_SERVERS entry %q must be host:port", s))
 		}
+	}
+
+	for _, r := range c.RelayURLs {
+		u, err := url.Parse(r)
+		if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+			errs = append(errs, fmt.Errorf("WIREMESH_RELAY_URLS entry %q must be an http(s) URL", r))
+		} else if c.IsProduction() && u.Scheme != "https" {
+			errs = append(errs, fmt.Errorf("WIREMESH_RELAY_URLS entry %q must use https in production", r))
+		}
+	}
+	if len(c.RelayURLs) > 0 && c.SecretKey == nil {
+		errs = append(errs, errors.New("WIREMESH_SECRET_KEY is required when WIREMESH_RELAY_URLS is set (it derives the relay signing key)"))
 	}
 
 	if len(errs) > 0 {

@@ -66,6 +66,7 @@ services:
       WIREMESH_SMTP_TLS: ${WIREMESH_SMTP_TLS:-starttls}
       # NAT traversal: the STUN server below, reached at the public domain.
       WIREMESH_STUN_SERVERS: ${WIREMESH_STUN_SERVERS:-${WIREMESH_DOMAIN}:3478}
+      WIREMESH_RELAY_URLS: ${WIREMESH_RELAY_URLS:-https://${WIREMESH_DOMAIN}/relay}
     read_only: true
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
@@ -89,7 +90,8 @@ services:
     networks: [frontend]
 
   relay:
-    # STUN for NAT traversal (Phase 5); the encrypted packet relay joins in Phase 6.
+    # STUN (UDP 3478) + encrypted packet relay (WebSocket, served via Caddy at /relay).
+    # WIREMESH_RELAY_CONTROL_KEY: output of `docker compose run --rm server relay-pubkey`.
     # UDP is published with Docker's iptables DNAT, which preserves client
     # source addresses (required: STUN reports them back).
     build:
@@ -99,6 +101,9 @@ services:
         VERSION: ${WIREMESH_VERSION:-dev}
     image: wiremesh-relay:${WIREMESH_VERSION:-dev}
     restart: unless-stopped
+    command: ["--stun-addr", ":3478", "--relay-addr", ":8443"]
+    environment:
+      WIREMESH_RELAY_CONTROL_KEY: ${WIREMESH_RELAY_CONTROL_KEY:-}
     ports:
       - "3478:3478/udp"
     read_only: true

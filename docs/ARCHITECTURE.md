@@ -174,7 +174,16 @@ default-deny. The control server compiles it per device into:
 * **Symmetric NATs** (random port per destination) can't be traversed this
   way; those pairs will use the relay.
 
-### 3.6 Relay protocol
+### 3.6 Relay protocol (implemented in Phase 6)
+Implementation notes: devices keep a WebSocket to their home relay (first
+entry of `relays` in the network map, from `WIREMESH_RELAY_URLS`).
+`magicsock` sends through it whenever a peer has no confirmed direct path,
+and switches to the direct path as soon as disco confirms one. Tokens come
+from `POST /device/relay-token`. They are signed with a key derived from
+`WIREMESH_SECRET_KEY`, and the relay verifies them with the public key
+from `wiremesh-server relay-pubkey`. The relay forwards only between devices
+of the same network and rate-limits each client.
+
 The relay is a custom protocol, not TURN. TURN allocates per-flow ports and
 needs UDP. Our relay runs over TLS on TCP 443/8443, so it passes restrictive
 firewalls and proxies. It keys forwarding on the destination node's public key

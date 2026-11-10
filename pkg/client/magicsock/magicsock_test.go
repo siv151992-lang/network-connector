@@ -71,8 +71,8 @@ func (n *node) addr() netip.AddrPort {
 // connect configures a and b as WireGuard peers through their magicsocks.
 func connect(t *testing.T, a, b *node, aSeesB, bSeesA []netip.AddrPort) {
 	t.Helper()
-	a.ms.SetPeers([]protocol.Node{b.asPeer(aSeesB...)}, nil)
-	b.ms.SetPeers([]protocol.Node{a.asPeer(bSeesA...)}, nil)
+	a.ms.SetPeers([]protocol.Node{b.asPeer(aSeesB...)}, nil, nil)
+	b.ms.SetPeers([]protocol.Node{a.asPeer(bSeesA...)}, nil, nil)
 	for _, pair := range [][2]*node{{a, b}, {b, a}} {
 		self, peer := pair[0], pair[1]
 		cfg := fmt.Sprintf("public_key=%s\nendpoint=wm:%s\npersistent_keepalive_interval=1\nallowed_ip=%s/32\n",
@@ -86,7 +86,9 @@ func connect(t *testing.T, a, b *node, aSeesB, bSeesA []netip.AddrPort) {
 func ping(t *testing.T, from, to *node) {
 	t.Helper()
 	pkt := tuntest.Ping(to.tunAddr, from.tunAddr)
-	deadline := time.After(10 * time.Second)
+	// 20 s: without a relay, WireGuard handshakes sent before disco confirms a
+	// path are dropped by design, and WireGuard retries every 5 s.
+	deadline := time.After(20 * time.Second)
 	for {
 		select {
 		case from.tun.Outbound <- pkt:

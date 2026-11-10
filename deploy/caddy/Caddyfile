@@ -13,6 +13,11 @@
 		}
 	}
 
+	# Packet relay (WebSocket).
+	handle /relay {
+		reverse_proxy relay:8443
+	}
+
 	# Phase 10: dashboard static files go here.
 	handle {
 		respond "WireMesh control server. The dashboard arrives in Phase 10." 200

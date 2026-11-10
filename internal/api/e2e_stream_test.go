@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
 	"net/netip"
@@ -12,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/siv151992-lang/network-connector/pkg/protocol"
+	"github.com/siv151992-lang/network-connector/pkg/relayproto"
 )
 
 type wsDevice struct {
@@ -176,4 +178,29 @@ func mustKey(t *testing.T, w *world, d *client) protocol.Key {
 		t.Fatal(err)
 	}
 	return k
+}
+
+func TestE2ERelayToken(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	key := w.alice.must(201, "POST", w.path("/auth-keys"), map[string]any{"preauthorized": true}).str(t, "key")
+	d, _ := w.enroll(t, key, "relay-user")
+	tok := d.must(200, "POST", "/api/v1/device/relay-token", map[string]any{}).str(t, "token")
+
+	sk, err := relayproto.SigningKey(testSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := relayproto.Verify(sk.Public().(ed25519.PublicKey), tok, time.Now())
+	if err != nil || c.NodeKey != mustKey(t, w, d) || c.NetworkID != w.nid {
+		t.Fatalf("token claims: %+v %v", c, err)
+	}
+	if time.Unix(c.Expires, 0).After(time.Now().Add(11 * time.Minute)) {
+		t.Fatal("token lifetime too long")
+	}
+
+	pend := w.alice.must(201, "POST", w.path("/auth-keys"), map[string]any{}).str(t, "key")
+	p, _ := w.enroll(t, pend, "pending")
+	p.errCode(403, "forbidden", "POST", "/api/v1/device/relay-token", map[string]any{})
+	w.e.client().errCode(401, "unauthorized", "POST", "/api/v1/device/relay-token", map[string]any{})
 }

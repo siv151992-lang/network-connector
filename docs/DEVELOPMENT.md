@@ -86,6 +86,17 @@ symmetric NAT correctly yields no direct path. Optional variables:
 routers' conntrack tables during roaming, and `WIREMESH_TEST_SKIP_CASE2=1`
 skips the symmetric-NAT case.
 
+## Phase 6: relay
+
+```bash
+export WIREMESH_SECRET_KEY=$(openssl rand -base64 32)   # same key as the control server
+./bin/wiremesh-relay --stun-addr :3478 --relay-addr :8443 --control-key "$(./bin/wiremesh-server relay-pubkey)"
+WIREMESH_RELAY_URLS=http://localhost:8443/relay WIREMESH_STUN_SERVERS=localhost:3478 make run
+```
+In production Caddy serves the relay at `https://<domain>/relay` (port 443),
+so only UDP 3478 needs opening in addition. `wiremesh status` shows `relay`
+as the endpoint for relayed peers.
+
 ### What the tests cover
 | Package | Kind | Covers |
 |---|---|---|
@@ -107,7 +118,9 @@ skips the symmetric-NAT case.
 | `pkg/disco` | unit + fuzz | NaCl box seal/open, wrong key, tampering, truncation |
 | `pkg/client/magicsock` | integration | real wireguard-go devices over the magic socket: direct path discovery, one-sided candidates, call-me-maybe, unknown/foreign traffic dropped, path expiry |
 | `internal/api` stream | integration | WebSocket auth (401/403), push on join/approve/ACL change, presence, endpoints over the stream, call-me-maybe forwarding with server-stamped sender, ACL blocks forwarding, revocation message |
-| `scripts/nat-e2e.sh` | system | real NATs + STUN: hole punch through two `MASQUERADE` routers (~4 s), roaming recovery (~50-65 s), symmetric NAT yields no path |
+| `relay` | unit | forwarding with relay-stamped sender, forged/expired/garbage tokens rejected, network isolation, token and frame codecs |
+| `pkg/client/magicsock` relay | integration | real WireGuard over the relay with no direct candidates, then automatic upgrade to a direct path |
+| `scripts/nat-e2e.sh` | system | real NATs + STUN + relay: hole punch (~4 s), roaming recovers via relay (~10 s) then direct (~45 s), symmetric NAT works via relay |
 | `scripts/netns-e2e.sh` | system | two namespaces, real `wiremesh` clients: enroll, handshake, ping both ways, live policy push (TCP 8080 allowed, 8081 and ICMP blocked, replies tracked), revocation tears down the tunnel |
 | `internal/store` | integration | users (case-insensitive email, lockout), sessions (revocation scoping), networks (last-owner protection incl. concurrent race), devices (uniqueness of IP/name/key, status state machine, revocation clears credential, cross-network isolation), audit (keyset pagination) |
 

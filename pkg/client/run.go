@@ -83,7 +83,7 @@ func Run(ctx context.Context, o Options) error {
 	}
 
 	eng, err := NewEngine(EngineConfig{InterfaceName: o.InterfaceName, PrivateKey: st.NodePrivate,
-		DiscoPrivate: st.DiscoPrivate, ListenPort: o.ListenPort, Log: log})
+		DiscoPrivate: st.DiscoPrivate, ListenPort: o.ListenPort, Log: log, RelayToken: ctl.RelayToken})
 	if err != nil {
 		return err
 	}
