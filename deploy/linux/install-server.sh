@@ -23,10 +23,42 @@ if [ -z "${DOMAIN:-}" ]; then
 fi
 echo "==> Server address: $DOMAIN"
 
-echo "==> Downloading WireMesh server ($ARCH)"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-URL=${WIREMESH_TARBALL_URL:-https://github.com/$REPO/releases/latest/download/wiremesh-server-linux-$ARCH.tar.gz}
-curl -fSL --retry 3 -o "$TMP/s.tgz" "$URL"
+if [ -n "${WIREMESH_TARBALL_URL:-}" ]; then
+  echo "==> Downloading WireMesh server"
+  curl -fSL --retry 3 -o "$TMP/s.tgz" "$WIREMESH_TARBALL_URL"
+else
+  # Build from source (pinned toolchains; takes a few minutes).
+  echo "==> Installing build tools"
+  if command -v apt-get >/dev/null; then
+    apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git unzip xz-utils ca-certificates curl >/dev/null
+  elif command -v dnf >/dev/null; then
+    dnf install -y -q git unzip xz tar ca-certificates curl >/dev/null
+  fi
+  # Small VMs (1 GB) need swap for the dashboard build.
+  if [ "$(awk '/MemTotal/ {print $2}' /proc/meminfo)" -lt 1800000 ] && ! swapon --show | grep -q .; then
+    fallocate -l 2G /swapfile-wiremesh && chmod 600 /swapfile-wiremesh && mkswap /swapfile-wiremesh >/dev/null && swapon /swapfile-wiremesh
+  fi
+  GO_VERSION=1.24.7 NODE_VERSION=22.11.0
+  TOOLS=/opt/wiremesh-build
+  mkdir -p "$TOOLS"
+  if [ ! -x "$TOOLS/go/bin/go" ]; then
+    curl -fsSL "https://dl.google.com/go/go$GO_VERSION.linux-$ARCH.tar.gz" | tar -C "$TOOLS" -xz
+  fi
+  NARCH=$([ "$ARCH" = amd64 ] && echo x64 || echo arm64)
+  if [ ! -x "$TOOLS/node/bin/node" ]; then
+    curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-$NARCH.tar.xz" | tar -C "$TOOLS" -xJ
+    mv "$TOOLS/node-v$NODE_VERSION-linux-$NARCH" "$TOOLS/node"
+  fi
+  echo "==> Downloading the source"
+  rm -rf "$TOOLS/src"
+  git clone -q --depth 1 "https://github.com/$REPO.git" "$TOOLS/src"
+  echo "==> Building WireMesh server (a few minutes)"
+  (cd "$TOOLS/src" && PATH="$TOOLS/go/bin:$TOOLS/node/bin:$PATH" GOTOOLCHAIN=local HOME="$TOOLS" OUT="$TMP" \
+    deploy/linux/build-server.sh "$(git rev-parse --short HEAD)" "$ARCH" >/dev/null)
+  mv "$TMP/wiremesh-server-linux-$ARCH.tar.gz" "$TMP/s.tgz"
+fi
+[ "${WIREMESH_BUILD_ONLY:-}" = 1 ] && { cp "$TMP/s.tgz" "${WIREMESH_BUILD_OUT:-./wiremesh-server.tgz}"; echo "built"; exit 0; }
 systemctl stop wiremesh-server 2>/dev/null || true
 rm -rf /opt/wiremesh-server
 tar -C /opt -xzf "$TMP/s.tgz"
