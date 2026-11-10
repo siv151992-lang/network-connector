@@ -4,7 +4,7 @@ A self-hostable private mesh VPN built on WireGuard: a Go control server
 coordinates your devices, and traffic flows end-to-end encrypted directly
 between them, or through an encrypted relay when NATs block direct paths.
 
-> **Status: Phases 1–6 complete.** Accounts, networks, roles, auth keys and
+> **Status: Phases 1–6 and 10 complete** (Android/Windows clients pending). Accounts, networks, roles, auth keys and
 > device enrollment work over the API. The Linux client brings up **real
 > WireGuard tunnels** with ACL-enforced packet filtering, pushes and receives
 > changes instantly over a control stream, and connects devices **directly
@@ -13,6 +13,7 @@ between them, or through an encrypted relay when NATs block direct paths.
 > See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 * [Architecture, schema, API design](docs/ARCHITECTURE.md)
+* Web dashboard: `web/` (React + TypeScript + Tailwind), served by Caddy at your domain
 * [API reference + curl walkthrough](docs/API.md)
 * [Access control policies](docs/ACL.md)
 * [Development, testing & production deployment](docs/DEVELOPMENT.md)

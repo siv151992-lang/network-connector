@@ -73,7 +73,10 @@ services:
     networks: [backend, frontend]
 
   caddy:
-    image: caddy:2-alpine
+    build:
+      context: ..
+      dockerfile: deploy/docker/caddy.Dockerfile
+    image: wiremesh-caddy:${WIREMESH_VERSION:-dev}
     restart: unless-stopped
     depends_on: [server]
     ports:
@@ -84,7 +87,6 @@ services:
       WIREMESH_DOMAIN: ${WIREMESH_DOMAIN}
       ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     networks: [frontend]

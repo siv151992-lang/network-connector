@@ -97,6 +97,22 @@ In production Caddy serves the relay at `https://<domain>/relay` (port 443),
 so only UDP 3478 needs opening in addition. `wiremesh status` shows `relay`
 as the endpoint for relayed peers.
 
+## Phase 10: web dashboard
+
+```bash
+cd web && npm install
+WIREMESH_API=http://localhost:8080 npm run dev     # http://localhost:5173, API proxied (same-origin)
+```
+Set `WIREMESH_PUBLIC_URL=http://localhost:5173` on the server while developing:
+the CSRF check compares the browser's Origin with it. Production builds are
+baked into the Caddy image (`deploy/docker/caddy.Dockerfile`) and served with
+a strict Content-Security-Policy.
+
+End-to-end test (real server + PostgreSQL + Chromium; needs Playwright):
+```bash
+make web-e2e TEST_DB=postgres://postgres:secret@localhost:5432/postgres
+```
+
 ### What the tests cover
 | Package | Kind | Covers |
 |---|---|---|

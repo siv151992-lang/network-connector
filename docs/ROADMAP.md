@@ -13,5 +13,5 @@ Each phase ends with code that builds, tests that pass, and a "how to verify" se
 | 7. Android | Compose app, login (device-code flow), `VpnService`, gomobile core, always-on VPN support | Phone pings a Linux peer; survives Wi-Fi ↔ LTE switch |
 | 8. Windows | Windows service (Wintun), Wails GUI, MSI via WiX | Windows host pings Linux and Android peers |
 | 9. Linux client | `wiremeshd` systemd service, CLI, device-code login flow, DNS (systemd-resolved), subnet routes, optional kernel mode, .deb/.rpm | `wiremesh up/status/down` on Debian/Fedora |
-| 10. Dashboard | All 10 screens, dark/light theme, live status via WebSocket | Playwright E2E across main flows |
+| **10. Dashboard** ✅ | All 10 screens, dark/light theme, live status via WebSocket | `web/e2e/run.mjs`: 17-step Playwright run in Chromium against the real server (login, network, auth keys, approval, live presence via a real control stream, tags, ACL save/validate/test, users, audit, revocation, 2FA QR, dark mode, mobile). Presence refreshes every 10 s (polling; a browser push channel can come later). Teams: roles cover it for now. |
 | 11. Security & production | gosec/govulncheck/trivy in CI, fuzzing for parsers (STUN, relay frames, ACL), load tests, backup/restore drills, hardening guide | Checklist in `docs/SECURITY.md` complete |

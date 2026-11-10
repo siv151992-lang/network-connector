@@ -18,9 +18,19 @@
 		reverse_proxy relay:8443
 	}
 
-	# Phase 10: dashboard static files go here.
+	# Dashboard (single-page app): unknown paths fall back to index.html so
+	# links like /verify-email?token=... work.
 	handle {
-		respond "WireMesh control server. The dashboard arrives in Phase 10." 200
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+		header {
+			Content-Security-Policy "default-src 'self'; img-src 'self' data:; connect-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+			X-Content-Type-Options nosniff
+			Referrer-Policy no-referrer
+		}
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
 	}
 
 	header {
