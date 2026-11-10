@@ -6,6 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/siv151992-lang/network-connector/internal/api/httpx"
@@ -43,6 +44,7 @@ type Deps struct {
 // Server holds dependencies shared by handlers.
 type Server struct {
 	cfg       *config.Config
+	setupMu   sync.Mutex // serializes first-user setup
 	log       *slog.Logger
 	store     *store.Store
 	db        Pinger

@@ -208,7 +208,24 @@ Invalid configuration aborts startup and lists every problem at once. In
 
 ---
 
-## Home/office LAN server on Windows (no domain)
+## Windows server without Docker (standalone)
+
+`deploy/windows/build-server.sh VERSION` builds
+`dist/wiremesh-server-windows-amd64-VERSION.zip`: `wiremesh-server.exe`, the
+dashboard and PostgreSQL 16 for Windows (zonky embedded binaries, pinned by
+SHA-256). On the Windows PC: unzip and double-click `Install.bat`. It installs
+the `WireMeshServer` service (runs as NetworkService) and opens TCP 80 and
+UDP 3478 in the firewall, then opens the dashboard. The first person to sign
+up becomes the admin (`WIREMESH_FIRST_USER_SETUP`). Data, secret key and log
+live in `%ProgramData%\WireMesh Server`.
+
+`wiremesh-server standalone` runs one process with embedded PostgreSQL
+(listening on 127.0.0.1 only), the API, the dashboard, the relay (`/relay`)
+and STUN, all configured automatically. Flags: `--data`, `--addr`, `--url`,
+`--web`, `--postgres`. It also works on Linux as a non-root user (tested
+here); on Windows it has only been cross-compiled.
+
+## Home/office LAN server with Docker (no domain)
 
 On a Windows PC with Docker Desktop, in an elevated PowerShell in `deploy/`:
 ```powershell

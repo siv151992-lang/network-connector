@@ -57,6 +57,8 @@ func run(args []string) error {
 		v := version.Get()
 		fmt.Printf("wiremesh-server %s (commit %s, built %s, %s)\n", v.Version, v.Commit, v.BuildDate, v.GoVersion)
 		return nil
+	case "standalone":
+		return runStandalone(args[1:])
 	case "relay-pubkey":
 		cfg, err := config.Load()
 		if err != nil {
@@ -73,7 +75,7 @@ func run(args []string) error {
 		return nil
 	case "serve", "migrate", "create-admin":
 	case "help", "-h", "--help":
-		fmt.Println("usage: wiremesh-server [serve | migrate up | migrate status | create-admin --email E [--name N] | version]")
+		fmt.Println("usage: wiremesh-server [standalone | serve | migrate up | migrate status | create-admin --email E [--name N] | version]")
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q (try: serve, migrate up, migrate status, create-admin, version)", cmd)
@@ -107,7 +109,7 @@ func run(args []string) error {
 	if cmd == "create-admin" {
 		return createAdmin(ctx, cfg, pool, args[1:])
 	}
-	return serve(ctx, cfg, log, pool)
+	return serve(ctx, cfg, log, pool, nil)
 }
 
 func runMigrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, sub string) error {
@@ -133,7 +135,9 @@ func runMigrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, sub s
 	}
 }
 
-func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, pool *pgxpool.Pool) error {
+// serve runs the control server. wrap, if set, wraps the API handler (standalone
+// mode adds the dashboard and relay on the same port).
+func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, pool *pgxpool.Pool, wrap func(http.Handler) http.Handler) error {
 	if cfg.AutoMigrate {
 		if _, err := db.Migrate(ctx, pool, log); err != nil {
 			return fmt.Errorf("auto-migrate: %w", err)
@@ -185,6 +189,9 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, pool *pgxp
 		Mailer: mailer, Box: box, Hub: hub,
 	})
 
+	if wrap != nil {
+		handler = wrap(handler)
+	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           handler,

@@ -24,6 +24,7 @@ const (
 
 func (s *Server) authRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/register", s.handle(s.limited(s.handleRegister)))
+	mux.HandleFunc("GET /api/v1/auth/setup", s.handle(s.handleSetupStatus))
 	mux.HandleFunc("POST /api/v1/auth/verify-email", s.handle(s.limited(s.handleVerifyEmail)))
 	mux.HandleFunc("POST /api/v1/auth/verify-email/resend", s.handle(s.limited(s.handleResendVerification)))
 	mux.HandleFunc("POST /api/v1/auth/login", s.handle(s.limited(s.handleLogin)))
@@ -84,8 +85,34 @@ type registerReq struct {
 	DisplayName string `json:"display_name"`
 }
 
+// handleSetupStatus tells the dashboard whether to show first-run admin setup.
+func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) error {
+	required := false
+	if s.cfg.FirstUserSetup {
+		n, err := s.store.CountUsers(r.Context())
+		if err != nil {
+			return err
+		}
+		required = n == 0
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]bool{"setup_required": required})
+	return nil
+}
+
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) error {
-	if !s.cfg.AllowRegistration {
+	// First-run setup: while no users exist, the first sign-up becomes the
+	// system admin (serialized so two simultaneous sign-ups can't both win).
+	firstUser := false
+	if s.cfg.FirstUserSetup {
+		s.setupMu.Lock()
+		defer s.setupMu.Unlock()
+		n, err := s.store.CountUsers(r.Context())
+		if err != nil {
+			return err
+		}
+		firstUser = n == 0
+	}
+	if !s.cfg.AllowRegistration && !firstUser {
 		return &httpx.Error{Status: http.StatusForbidden, Code: "registration_disabled",
 			Message: "self-registration is disabled; ask an administrator for an account"}
 	}
@@ -109,10 +136,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	u, err := s.store.CreateUser(r.Context(), store.NewUser{
+	nu := store.NewUser{
 		Email: req.Email, PasswordHash: hash, DisplayName: req.DisplayName,
 		Verified: !s.cfg.RequireEmailVerification,
-	})
+	}
+	if firstUser {
+		nu.SystemRole, nu.Verified = store.SystemRoleAdmin, true
+	}
+	u, err := s.store.CreateUser(r.Context(), nu)
 	accepted := map[string]string{"status": "verification_email_sent",
 		"message": "check your inbox for a link to verify your email address"}
 	if errors.Is(err, store.ErrConflict) {
@@ -130,7 +161,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) error {
 	}
 	s.audit(r, store.NewAuditEntry{ActorUserID: &u.ID, Action: "user.register", TargetType: "user", TargetID: u.ID.String()})
 
-	if !s.cfg.RequireEmailVerification {
+	if !s.cfg.RequireEmailVerification || firstUser {
 		httpx.WriteJSON(w, http.StatusCreated, map[string]any{"user": u})
 		return nil
 	}

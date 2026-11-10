@@ -19,6 +19,11 @@ between them, or through an encrypted relay when NATs block direct paths.
 * [Development, testing & production deployment](docs/DEVELOPMENT.md)
 * [Roadmap](docs/ROADMAP.md)
 
+## Easiest setup (Windows, no Docker)
+
+1. **Server:** on an always-on Windows PC, unzip `wiremesh-server-windows-amd64-*.zip` and double-click `Install.bat`. Create the admin account in the browser that opens.
+2. **Devices:** install the WireMesh app, enter the server's address (e.g. `192.168.1.100`) and log in.
+
 ## Join a device (Linux)
 ```bash
 make deb && sudo dpkg -i dist/wiremesh_*_amd64.deb     # installs + starts wiremeshd

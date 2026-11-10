@@ -14,7 +14,8 @@ cd "$ROOT"
 go build -trimpath -ldflags "$LDFLAGS" -o "$STAGE/wiremesh.exe" ./cmd/wiremesh
 go build -trimpath -ldflags "$LDFLAGS" -o "$STAGE/wiremeshd.exe" ./cmd/wiremeshd
 go build -trimpath -ldflags "$LDFLAGS -H windowsgui" -o "$STAGE/wiremesh-tray.exe" ./cmd/wiremesh-tray
-cp clients/windows/install.ps1 clients/windows/uninstall.ps1 clients/windows/README.txt "$STAGE/"
+cp clients/windows/install.ps1 clients/windows/uninstall.ps1 clients/windows/README.txt clients/windows/Install.bat "$STAGE/"
+sed -i 's/\r*$/\r/' "$STAGE/Install.bat" "$STAGE/README.txt" # Windows line endings
 mkdir -p "$OUT"
 ZIP="$OUT/wiremesh-windows-$ARCH-$VERSION.zip"
 (cd "$STAGE" && rm -f "$ZIP" && python3 -c "import sys,zipfile,os;z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED);[z.write(f) for f in sorted(os.listdir('.'))]" "$ZIP")

@@ -31,6 +31,10 @@ export function Login() {
   const [mfa, setMfa] = useState(false);
   const [err, setErr] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
+  // First run of a standalone server: no accounts yet, so create the admin.
+  useEffect(() => {
+    api.setup().then((r) => r.setup_required && nav("/register?setup=1", { replace: true })).catch(() => {});
+  }, [nav]);
   if (user) return <Navigate to={loc.state?.from ?? "/"} replace />;
 
   const submit = async (e: FormEvent) => {
@@ -86,6 +90,8 @@ export function Login() {
 }
 
 export function Register() {
+  const [params] = useSearchParams();
+  const setup = params.get("setup") === "1";
   const [form, setForm] = useState({ email: "", password: "", name: "" });
   const [err, setErr] = useState<unknown>(null);
   const [done, setDone] = useState("");
@@ -94,14 +100,14 @@ export function Register() {
     setErr(null);
     try {
       const r = await api.register(form.email, form.password, form.name);
-      setDone(r.user ? "Account created. You can sign in now." : "Check your inbox for a link to verify your email address.");
+      setDone(r.user ? (setup ? "Admin account created. Sign in to set up your network." : "Account created. You can sign in now.") : "Check your inbox for a link to verify your email address.");
     } catch (e) {
       setErr(e);
     }
   };
   const fields = err instanceof ApiError ? err.fields : undefined;
   return (
-    <Shell title="Create account" footer={<Link className="text-indigo-600" to="/login">Back to sign in</Link>}>
+    <Shell title={setup ? "Welcome! Create the admin account" : "Create account"} footer={<Link className="text-indigo-600" to="/login">{done ? "Sign in" : "Back to sign in"}</Link>}>
       {done ? (
         <p className="text-sm">{done}</p>
       ) : (

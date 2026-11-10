@@ -161,6 +161,7 @@ export const api = {
     request<{ user: User; csrf_token: string; mfa_required: boolean }>("POST", "/auth/login", { email, password }, { quiet401: true }),
   loginMFA: (code: string) => request<{ user: User; csrf_token: string }>("POST", "/auth/login/mfa", { code }, { quiet401: true }),
   logout: () => post<void>("/auth/logout"),
+  setup: () => get<{ setup_required: boolean }>("/auth/setup"),
   register: (email: string, password: string, display_name: string) =>
     post<{ status?: string; user?: User }>("/auth/register", { email, password, display_name }),
   verifyEmail: (token: string) => post<{ status: string }>("/auth/verify-email", { token }),

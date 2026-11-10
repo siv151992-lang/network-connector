@@ -1,7 +1,6 @@
 WireMesh for Windows (Windows 10 1809+ / Windows 11, amd64 or arm64)
 
-Install (elevated PowerShell, in this folder):
-  powershell -ExecutionPolicy Bypass -File .\install.ps1
+Install: double-click Install.bat (click Yes when Windows asks).
 
 This installs to C:\Program Files\WireMesh, registers the "WireMesh" service
 (starts at boot), adds the tray app at sign-in, and downloads the Wintun

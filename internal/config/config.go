@@ -43,7 +43,10 @@ type Config struct {
 	DefaultIPv4Range netip.Prefix // address range assigned to new networks
 
 	// Authentication (Phase 3)
-	AllowRegistration        bool          // public self-sign-up; otherwise admins create users
+	AllowRegistration bool // public self-sign-up; otherwise admins create users
+	// FirstUserSetup lets the first person to sign up (while no users exist)
+	// create the system admin account from the dashboard (standalone mode).
+	FirstUserSetup           bool
 	RequireEmailVerification bool          // users must verify email before logging in
 	SessionIdleTimeout       time.Duration // sliding expiry
 	SessionMaxLifetime       time.Duration // absolute expiry
@@ -90,6 +93,7 @@ func LoadFrom(lookup func(string) (string, bool)) (*Config, error) {
 		ShutdownTimeout: g.duration("WIREMESH_SHUTDOWN_TIMEOUT", 20*time.Second),
 
 		AllowRegistration:        g.bool("WIREMESH_ALLOW_REGISTRATION", false),
+		FirstUserSetup:           g.bool("WIREMESH_FIRST_USER_SETUP", false),
 		RequireEmailVerification: g.bool("WIREMESH_REQUIRE_EMAIL_VERIFICATION", true),
 		SessionIdleTimeout:       g.duration("WIREMESH_SESSION_IDLE_TIMEOUT", 7*24*time.Hour),
 		SessionMaxLifetime:       g.duration("WIREMESH_SESSION_MAX_LIFETIME", 30*24*time.Hour),
