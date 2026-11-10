@@ -136,7 +136,7 @@ func onReady() {
 			case <-tick.C:
 				refresh()
 			case <-connect.ClickedCh:
-				connectTo(last == nil || last.ServerURL == "")
+				connectTo(last == nil || last.ServerURL == "" || last.State == client.StateError)
 			case <-change.ClickedCh:
 				connectTo(true)
 			case <-disconnect.ClickedCh:
