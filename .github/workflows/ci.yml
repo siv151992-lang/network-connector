@@ -1,0 +1,110 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+  TEST_DB: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Lint (gofmt, vet)
+        run: make lint
+      - name: staticcheck (linux + windows)
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2025.1.1
+          staticcheck ./...
+          GOOS=windows staticcheck ./...
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          govulncheck ./...
+      - name: Unit + integration tests (race)
+        run: WIREMESH_TEST_DATABASE_URL="$TEST_DB" go test -race -count=1 ./...
+      - name: Fuzz (short)
+        run: |
+          set -e
+          for t in "FuzzParse ./internal/acl" "FuzzInboundFilter ./pkg/client" "FuzzDNSAnswer ./pkg/client" \
+                   "FuzzDecodeAndVerify ./pkg/relayproto" "FuzzParse ./pkg/stun" "FuzzParseResponse ./pkg/stun" "FuzzOpen ./pkg/disco"; do
+            set -- $t; go test -run='^$' -fuzz="^$1\$" -fuzztime=20s "$2"
+          done
+      - name: Backup/restore drill
+        run: |
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          DB_ADMIN="$TEST_DB" scripts/backup-drill.sh
+      - name: Real WireGuard tunnels in network namespaces
+        run: sudo --preserve-env=PATH,GOTOOLCHAIN,HOME env WIREMESH_TEST_DATABASE_URL="$TEST_DB" scripts/netns-e2e.sh
+      - name: NAT traversal + relay through real NAT routers
+        run: sudo --preserve-env=PATH,GOTOOLCHAIN,HOME env WIREMESH_TEST_DATABASE_URL="$TEST_DB" scripts/nat-e2e.sh
+      - name: Packages (deb, Windows zips)
+        run: make deb windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/
+
+  web:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: cd web && npm ci && npm audit --omit=dev && npm run build
+      - name: Dashboard E2E (Chromium, production CSP)
+        run: |
+          cd web
+          npm install --no-save playwright@1.63.0
+          npx playwright install --with-deps chromium
+          WIREMESH_TEST_DATABASE_URL="$TEST_DB" npm run e2e
+
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f deploy/docker-compose.yml config -q
+        env:
+          WIREMESH_DOMAIN: vpn.example.com
+          WIREMESH_SECRET_KEY: ci-only-not-a-secret-ci-only-not-a-secret=
+          POSTGRES_PASSWORD: ci
+          ACME_EMAIL: ops@example.com
+      - run: make docker VERSION=ci
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: wiremesh-server:ci
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true

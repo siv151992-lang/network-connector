@@ -82,7 +82,7 @@ func SigningKey(secret []byte) (ed25519.PrivateKey, error) {
 	return ed25519.NewKeyFromSeed(seed), nil
 }
 
-var b64 = base64.RawURLEncoding
+var b64 = base64.RawURLEncoding.Strict()
 
 // Sign mints a token: base64url(json claims) "." base64url(signature).
 func Sign(key ed25519.PrivateKey, c Claims) (string, error) {
@@ -98,7 +98,7 @@ func Sign(key ed25519.PrivateKey, c Claims) (string, error) {
 func Verify(pub ed25519.PublicKey, token string, now time.Time) (Claims, error) {
 	var c Claims
 	p, sig, ok := strings.Cut(token, ".")
-	if !ok || len(token) > 1024 {
+	if !ok || len(token) > 1024 || !canonical(token) {
 		return c, ErrToken
 	}
 	s, err := b64.DecodeString(sig)
@@ -113,6 +113,18 @@ func Verify(pub ed25519.PublicKey, token string, now time.Time) (Claims, error) 
 		return c, ErrToken
 	}
 	return c, nil
+}
+
+// canonical reports whether s uses only the unpadded base64url alphabet and
+// '.'; the decoder would otherwise skip CR/LF, making tokens malleable.
+func canonical(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 // ParsePublicKey decodes a base64 Ed25519 public key (relay configuration).

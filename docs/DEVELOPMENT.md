@@ -142,6 +142,20 @@ End-to-end test (real server + PostgreSQL + Chromium; needs Playwright):
 make web-e2e TEST_DB=postgres://postgres:secret@localhost:5432/postgres
 ```
 
+## Phase 11: security and production checks
+
+```bash
+# Fuzz a parser (others: see .github/workflows/ci.yml)
+go test -run='^$' -fuzz='^FuzzDecodeAndVerify$' -fuzztime=1m ./pkg/relayproto
+# Netmap load benchmark (1000 devices)
+go test -run='^$' -bench=Netmap1000 -benchmem ./internal/acl
+# Backup/restore drill against any PostgreSQL that allows CREATE DATABASE
+DB_ADMIN=postgres://postgres:secret@localhost:5432/postgres scripts/backup-drill.sh
+```
+CI (`.github/workflows/ci.yml`) runs all of these plus staticcheck,
+govulncheck, npm audit, Trivy, the netns/NAT tunnel tests, the dashboard E2E
+and the package builds on every push. See `docs/SECURITY.md`.
+
 ### What the tests cover
 | Package | Kind | Covers |
 |---|---|---|
@@ -163,6 +177,8 @@ make web-e2e TEST_DB=postgres://postgres:secret@localhost:5432/postgres
 | `pkg/disco` | unit + fuzz | NaCl box seal/open, wrong key, tampering, truncation |
 | `pkg/client/magicsock` | integration | real wireguard-go devices over the magic socket: direct path discovery, one-sided candidates, call-me-maybe, unknown/foreign traffic dropped, path expiry |
 | `internal/api` stream | integration | WebSocket auth (401/403), push on join/approve/ACL change, presence, endpoints over the stream, call-me-maybe forwarding with server-stamped sender, ACL blocks forwarding, revocation message |
+| `pkg/relayproto`, `internal/acl`, `pkg/client` | fuzz | relay frames/tokens (canonical encoding only), ACL policies, inbound packet filter, MagicDNS |
+| `scripts/backup-drill.sh` | system | dump a live server, restore into an empty DB, verify logins, devices, keys, encrypted secrets, audit log |
 | `relay` | unit | forwarding with relay-stamped sender, forged/expired/garbage tokens rejected, network isolation, token and frame codecs |
 | `pkg/client/magicsock` relay | integration | real WireGuard over the relay with no direct candidates, then automatic upgrade to a direct path |
 | `scripts/nat-e2e.sh` | system | real NATs + STUN + relay: hole punch (~4 s), roaming recovers via relay (~10 s) then direct (~45 s), symmetric NAT works via relay |
@@ -261,7 +277,7 @@ docker compose -f deploy/docker-compose.yml exec -T postgres \
   pg_restore -U wiremesh -d wiremesh --clean --if-exists < /var/backups/wiremesh-YYYY-MM-DD.dump
 docker compose -f deploy/docker-compose.yml start server
 ```
-Test a restore into a scratch database regularly. An untested backup isn't a backup.
+Test a restore into a scratch database regularly (`scripts/backup-drill.sh` automates the check). An untested backup isn't a backup. Back up `WIREMESH_SECRET_KEY` separately: encrypted secrets can't be read without it.
 
 ### 6. Upgrades
 ```bash

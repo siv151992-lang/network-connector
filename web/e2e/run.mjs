@@ -179,12 +179,14 @@ try {
 
   // Admin: create a user; Members: add them.
   await page.getByRole("link", { name: "Admin" }).click();
+  await page.getByRole("heading", { name: "Admin" }).first().waitFor();
   await page.getByLabel("Email").fill("bob@example.com");
   await page.getByLabel("Name").fill("Bob");
   await page.getByLabel("Initial password").fill("bob password 123");
   await page.getByRole("button", { name: "Create" }).click();
   await expectText("bob@example.com");
   await page.getByRole("link", { name: "Users & roles" }).click();
+  await page.getByRole("heading", { name: "Users & roles" }).waitFor(); // v7 navigates in a transition
   await page.getByLabel("Email").fill("bob@example.com");
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await page.getByLabel("Role of bob@example.com").waitFor();
