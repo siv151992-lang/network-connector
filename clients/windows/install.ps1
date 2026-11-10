@@ -52,6 +52,13 @@ $sh.TargetPath = Join-Path $dst "wiremesh-tray.exe"
 $sh.Save()
 Start-Process (Join-Path $dst "wiremesh-tray.exe")
 
+# File sharing (\\100.64.x.x\share) from WireMesh devices only. Windows puts
+# the WireMesh adapter in the Public profile, where file sharing is blocked.
+if (-not (Get-NetFirewallRule -DisplayName "WireMesh file sharing" -ErrorAction SilentlyContinue)) {
+    New-NetFirewallRule -DisplayName "WireMesh file sharing" -Direction Inbound -Protocol TCP -LocalPort 445 `
+        -RemoteAddress 100.64.0.0/10 -Action Allow | Out-Null
+}
+
 Write-Host "`nWireMesh installed."
 if ($Server -ne "") {
     & (Join-Path $dst "wiremesh.exe") up --server $Server

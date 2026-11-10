@@ -12,3 +12,4 @@ $path = [Environment]::GetEnvironmentVariable("Path", "Machine")
 Remove-Item -Recurse -Force $dst
 if (-not $KeepState) { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $env:ProgramData "WireMesh") }
 Write-Host "WireMesh removed."
+Remove-NetFirewallRule -DisplayName "WireMesh file sharing" -ErrorAction SilentlyContinue

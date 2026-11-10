@@ -16,6 +16,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -109,7 +110,7 @@ func run(args []string) error {
 	if cmd == "create-admin" {
 		return createAdmin(ctx, cfg, pool, args[1:])
 	}
-	return serve(ctx, cfg, log, pool, nil)
+	return serve(ctx, cfg, log, pool, nil, nil)
 }
 
 func runMigrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, sub string) error {
@@ -137,7 +138,7 @@ func runMigrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, sub s
 
 // serve runs the control server. wrap, if set, wraps the API handler (standalone
 // mode adds the dashboard and relay on the same port).
-func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, pool *pgxpool.Pool, wrap func(http.Handler) http.Handler) error {
+func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, pool *pgxpool.Pool, wrap func(http.Handler) http.Handler, tlsCfg *tls.Config) error {
 	if cfg.AutoMigrate {
 		if _, err := db.Migrate(ctx, pool, log); err != nil {
 			return fmt.Errorf("auto-migrate: %w", err)
@@ -202,13 +203,18 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, pool *pgxp
 		IdleTimeout:    120 * time.Second,
 		MaxHeaderBytes: 64 << 10,
 		ErrorLog:       slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+		TLSConfig:      tlsCfg,
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
 		log.Info("control server listening", "addr", cfg.HTTPAddr, "env", cfg.Env,
 			"public_url", cfg.PublicURL.String(), "version", version.Version)
-		errCh <- srv.ListenAndServe()
+		if tlsCfg != nil {
+			errCh <- srv.ListenAndServeTLS("", "") // certificates come from tlsCfg
+		} else {
+			errCh <- srv.ListenAndServe()
+		}
 	}()
 
 	select {

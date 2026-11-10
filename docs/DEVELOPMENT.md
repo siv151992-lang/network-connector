@@ -208,6 +208,16 @@ Invalid configuration aborts startup and lists every problem at once. In
 
 ---
 
+## Cloud server without Docker (Linux)
+
+`deploy/linux/install-server.sh` (run with sudo on the VM, or via the curl
+one-liner in the README) downloads `wiremesh-server-linux-<arch>.tar.gz` from
+the latest GitHub release, installs a systemd unit running
+`wiremesh-server standalone --domain <public-ip>.sslip.io` as the `wiremesh`
+user, and opens 80/443/tcp + 3478/udp in the OS firewall. HTTPS certificates
+come from Let's Encrypt (`--domain`, cached in the data directory). Build the
+tarballs with `deploy/linux/build-server.sh VERSION amd64|arm64`.
+
 ## Windows server without Docker (standalone)
 
 `deploy/windows/build-server.sh VERSION` builds

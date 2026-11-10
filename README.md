@@ -19,10 +19,18 @@ between them, or through an encrypted relay when NATs block direct paths.
 * [Development, testing & production deployment](docs/DEVELOPMENT.md)
 * [Roadmap](docs/ROADMAP.md)
 
-## Easiest setup (Windows, no Docker)
+## Easiest setup
 
-1. **Server:** on an always-on Windows PC, unzip `wiremesh-server-windows-amd64-*.zip` and double-click `Install.bat`. Create the admin account in the browser that opens.
-2. **Devices:** install the WireMesh app, enter the server's address (e.g. `192.168.1.100`) and log in.
+1. **Server** on any Linux cloud VM (e.g. Oracle Cloud free tier), with HTTPS on a free `<ip>.sslip.io` name:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/siv151992-lang/network-connector/main/deploy/linux/install-server.sh | sudo bash
+   ```
+   Allow TCP 80, TCP 443 and UDP 3478 in the cloud firewall. Or, for one LAN only:
+   unzip `wiremesh-server-windows-amd64-*.zip` on a Windows PC and double-click `Install.bat`.
+2. **Devices:** install the WireMesh app (Windows: unzip, double-click `Install.bat`),
+   enter the server's address and log in.
+3. **Files:** share a folder on one PC; on another open `\\100.64.x.y\Folder`
+   (the address is shown in the dashboard).
 
 ## Join a device (Linux)
 ```bash

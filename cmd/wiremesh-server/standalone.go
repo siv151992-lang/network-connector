@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -34,6 +35,8 @@ import (
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/crypto/acme"
+	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/siv151992-lang/network-connector/internal/config"
 	"github.com/siv151992-lang/network-connector/internal/db"
@@ -48,6 +51,7 @@ const bundledPostgres = "16.4.0"
 
 type standaloneOpts struct {
 	Data, Addr, URL, Web, Postgres, STUNAddr string
+	Domain, Email                            string
 	PGPort                                   uint
 }
 
@@ -78,6 +82,8 @@ func runStandalone(args []string) error {
 	fs.StringVar(&o.Web, "web", filepath.Join(exeDir(), "web"), "dashboard files")
 	fs.StringVar(&o.Postgres, "postgres", filepath.Join(exeDir(), "postgres-"+runtime.GOOS+"-"+runtime.GOARCH+".txz"), "bundled PostgreSQL archive")
 	fs.StringVar(&o.STUNAddr, "stun-addr", ":3478", "STUN listen address (UDP)")
+	fs.StringVar(&o.Domain, "domain", "", "public DNS name: serve HTTPS on :443 with a free Let's Encrypt certificate (HTTP :80 redirects)")
+	fs.StringVar(&o.Email, "email", "", "contact email for Let's Encrypt (optional)")
 	fs.UintVar(&o.PGPort, "pg-port", 0, "embedded PostgreSQL port on 127.0.0.1 (0 = pick a free one)")
 	sub := ""
 	if len(args) > 0 && (args[0] == "install" || args[0] == "uninstall") {
@@ -190,7 +196,9 @@ func standalone(ctx context.Context, o standaloneOpts) (err error) {
 	}()
 
 	pub := o.URL
-	if pub == "" {
+	if o.Domain != "" {
+		pub, o.Addr = "https://"+o.Domain, ":443"
+	} else if pub == "" {
 		pub = "http://" + lanIP()
 		if _, port, _ := net.SplitHostPort(o.Addr); port != "" && port != "80" {
 			pub = "http://" + net.JoinHostPort(lanIP(), port)
@@ -269,7 +277,26 @@ func standalone(ctx context.Context, o standaloneOpts) (err error) {
 		return mux
 	}
 	log.Info("WireMesh standalone server ready: open the dashboard in a browser", "url", pub, "data", o.Data)
-	return serve(ctx, cfg, log, pool, wrap)
+	var tlsCfg *tls.Config
+	if o.Domain != "" {
+		m := &autocert.Manager{
+			Prompt: autocert.AcceptTOS, HostPolicy: autocert.HostWhitelist(o.Domain),
+			Cache: autocert.DirCache(filepath.Join(o.Data, "acme")), Email: o.Email,
+		}
+		tlsCfg = m.TLSConfig()
+		// HTTP/1.1 only: device streams and the relay are WebSocket upgrades.
+		tlsCfg.NextProtos = []string{"http/1.1", acme.ALPNProto}
+		tlsCfg.MinVersion = tls.VersionTLS12
+		// Port 80: Let's Encrypt HTTP challenges, everything else redirects to HTTPS.
+		hs := &http.Server{Addr: ":80", Handler: m.HTTPHandler(nil), ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("HTTP :80 (certificate challenges, redirect) failed", "error", err)
+			}
+		}()
+		go func() { <-ctx.Done(); _ = hs.Close() }()
+	}
+	return serve(ctx, cfg, log, pool, wrap, tlsCfg)
 }
 
 func startEmbeddedPostgres(o standaloneOpts, password string, logOut io.Writer) (*embeddedpostgres.EmbeddedPostgres, error) {
