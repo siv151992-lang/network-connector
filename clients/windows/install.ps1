@@ -32,6 +32,8 @@ if (Get-Service -Name WireMesh -ErrorAction SilentlyContinue) {
     Stop-Service -Name WireMesh -Force -ErrorAction SilentlyContinue
     & (Join-Path $dst "wiremeshd.exe") uninstall | Out-Null
 }
+Get-Process wiremesh-tray -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Milliseconds 500
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
 foreach ($f in "wiremesh.exe", "wiremeshd.exe", "wiremesh-tray.exe", "uninstall.ps1") {
     Copy-Item -Force (Join-Path $src $f) $dst
