@@ -33,6 +33,7 @@ import (
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/siv151992-lang/network-connector/internal/config"
 	"github.com/siv151992-lang/network-connector/internal/db"
@@ -307,7 +308,9 @@ func startEmbeddedPostgres(o standaloneOpts, password string, logOut io.Writer) 
 	pg := embeddedpostgres.NewDatabase(embeddedpostgres.DefaultConfig().
 		Version(embeddedpostgres.PostgresVersion(bundledPostgres)).
 		Port(uint32(o.PGPort)).
-		Username("wiremesh").Password(password).Database("wiremesh").
+		// "postgres" always exists, so the library's start check can't hang on a
+		// database an earlier interrupted first run never created (see ensureDatabase).
+		Username("wiremesh").Password(password).Database("postgres").
 		CachePath(cache).RuntimePath(runtimeDir).DataPath(dataDir).
 		StartParameters(map[string]string{"listen_addresses": "127.0.0.1", "unix_socket_directories": ""}).
 		StartTimeout(2 * time.Minute).
@@ -315,7 +318,32 @@ func startEmbeddedPostgres(o standaloneOpts, password string, logOut io.Writer) 
 	if err := pg.Start(); err != nil {
 		return nil, fmt.Errorf("start embedded PostgreSQL: %w", err)
 	}
+	if err := ensureDatabase(o.PGPort, password); err != nil {
+		_ = pg.Stop()
+		return nil, err
+	}
 	return pg, nil
+}
+
+// ensureDatabase creates the "wiremesh" database if it doesn't exist yet.
+func ensureDatabase(port uint, password string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, fmt.Sprintf("postgres://wiremesh:%s@127.0.0.1:%d/postgres?sslmode=disable", url.QueryEscape(password), port))
+	if err != nil {
+		return fmt.Errorf("connect to embedded PostgreSQL: %w", err)
+	}
+	defer conn.Close(ctx)
+	var exists bool
+	if err := conn.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'wiremesh')").Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := conn.Exec(ctx, "CREATE DATABASE wiremesh"); err != nil {
+			return fmt.Errorf("create database: %w", err)
+		}
+	}
+	return nil
 }
 
 // bestEffort ignores write errors: a Windows service has no valid stderr,
