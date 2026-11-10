@@ -93,7 +93,12 @@ func (d *Daemon) set(f func()) { d.mu.Lock(); f(); d.mu.Unlock() }
 func (d *Daemon) AutoStart() {
 	st, err := LoadState(d.StatePath)
 	if err != nil || st.Down {
-		d.set(func() { d.state = StateStopped })
+		d.set(func() {
+			d.state = StateStopped
+			if st != nil {
+				d.server = st.ServerURL
+			}
+		})
 		return
 	}
 	_ = d.Up(UpRequest{ServerURL: st.ServerURL})
@@ -101,6 +106,14 @@ func (d *Daemon) AutoStart() {
 
 // Up starts the tunnel (no-op if already running).
 func (d *Daemon) Up(req UpRequest) error {
+	if req.ServerURL != "" {
+		u, err := ResolveServerURL(context.Background(), req.ServerURL)
+		if err != nil {
+			d.set(func() { d.state, d.errMsg = StateError, err.Error() })
+			return err
+		}
+		req.ServerURL = u
+	}
 	d.mu.Lock()
 	if d.cancel != nil {
 		d.mu.Unlock()

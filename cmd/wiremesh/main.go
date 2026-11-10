@@ -1,6 +1,6 @@
 // Command wiremesh controls the WireMesh daemon (wiremeshd / Windows service).
 //
-//	wiremesh up [--server URL] [--auth-key KEY]   connect (first time: login link or auth key)
+//	wiremesh up [ADDRESS] [--auth-key KEY]        connect (first time: server address, then log in in the browser)
 //	wiremesh down                                 disconnect (stays down after reboot)
 //	wiremesh status [--json]                      peers, paths, traffic
 //	wiremesh logout                               forget this device
@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -60,8 +61,8 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: wiremesh <command> [flags]
 
-  up       connect; the first time, pass --server and either follow the login
-           link or pass --auth-key (or WIREMESH_AUTH_KEY)
+  up       connect. First time: wiremesh up 192.168.1.100 (your server's
+           address); a browser opens to log in. Or pass --auth-key.
   down     disconnect (stays disconnected across reboots)
   status   show this device, peers, connection paths and traffic (--json)
   logout   disconnect and forget this device (deletes its keys)
@@ -96,7 +97,17 @@ func cmdUp(args []string) error {
 	authKey := fs.String("auth-key", os.Getenv("WIREMESH_AUTH_KEY"), "auth key for unattended enrollment (or WIREMESH_AUTH_KEY)")
 	hostname := fs.String("hostname", "", "device name (default: hostname)")
 	timeout := fs.Duration("timeout", 10*time.Minute, "how long to wait for login/connection")
+	// Allow the address first or last: `wiremesh up 192.168.1.100 [--flags]`.
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		*server, args = args[0], args[1:]
+	}
 	_ = fs.Parse(args)
+	if fs.NArg() > 0 {
+		*server = fs.Arg(0)
+	}
+	if *server != "" {
+		fmt.Println("connecting to", *server, "…")
+	}
 	c := newDaemonClient(*sock)
 	st, err := c.call("POST", "/up", client.UpRequest{ServerURL: *server, AuthKey: *authKey, Hostname: *hostname})
 	if err != nil {
@@ -112,7 +123,8 @@ func cmdUp(args []string) error {
 		case client.StateNeedsLogin:
 			if st.LoginCode != shown {
 				shown = st.LoginCode
-				fmt.Printf("\nTo connect this device, open:\n\n    %s\n\nand confirm the code %s\n\n", st.LoginURL, st.LoginCode)
+				fmt.Printf("\nLog in in your browser to connect this device (opening it now):\n\n    %s\n\nand confirm the code %s\n\n", st.LoginURL, st.LoginCode)
+				client.OpenBrowser(st.LoginURL)
 			}
 		case client.StateNeedsApproval:
 			if shown != "approval" {

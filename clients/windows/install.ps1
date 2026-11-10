@@ -1,6 +1,6 @@
 # WireMesh for Windows: installer. Run in an elevated PowerShell from the
 # extracted release folder:
-#   powershell -ExecutionPolicy Bypass -File .\install.ps1 [-Server https://vpn.example.com]
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1 [-Server 192.168.1.100]
 param([string]$Server = "")
 $ErrorActionPreference = "Stop"
 
@@ -56,5 +56,5 @@ Write-Host "`nWireMesh installed."
 if ($Server -ne "") {
     & (Join-Path $dst "wiremesh.exe") up --server $Server
 } else {
-    Write-Host "Connect with:  wiremesh up --server https://your-server   (in an elevated terminal)"
+    Write-Host "Click the WireMesh tray icon (bottom right) and enter your server address."
 }

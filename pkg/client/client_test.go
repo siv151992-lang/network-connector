@@ -258,6 +258,13 @@ func TestStateFile(t *testing.T) {
 	if fi.Mode().Perm() != 0o600 {
 		t.Fatalf("state mode %o", fi.Mode().Perm())
 	}
+	// Not enrolled yet: a different address (e.g. http instead of https) is adopted.
+	if sw, err := LoadOrCreateState(path, "http://vpn.example.com"); err != nil || sw.ServerURL != "http://vpn.example.com" || sw.NodePrivate != st.NodePrivate {
+		t.Fatalf("switch before enrollment: %v", err)
+	}
+	if _, err := LoadOrCreateState(path, "https://vpn.example.com"); err != nil {
+		t.Fatal(err)
+	}
 	st.Credential = "wmd_x"
 	if err := st.Save(path); err != nil {
 		t.Fatal(err)
@@ -267,7 +274,7 @@ func TestStateFile(t *testing.T) {
 		t.Fatalf("reload: %v", err)
 	}
 	if _, err := LoadOrCreateState(path, "https://other.example.com"); err == nil {
-		t.Fatal("state for another server accepted")
+		t.Fatal("enrolled state accepted for another server")
 	}
 	if runtime.GOOS == "windows" {
 		return // protected by the directory ACL, not mode bits

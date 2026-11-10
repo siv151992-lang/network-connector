@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"fyne.io/systray"
@@ -35,6 +36,7 @@ func onReady() {
 	status.Disable()
 	systray.AddSeparator()
 	connect := systray.AddMenuItem("Connect", "Bring the tunnel up")
+	change := systray.AddMenuItem("Change server…", "Connect to a different WireMesh server")
 	disconnect := systray.AddMenuItem("Disconnect", "Bring the tunnel down")
 	login := systray.AddMenuItem("Log in…", "Open the login page for this device")
 	dashboard := systray.AddMenuItem("Open dashboard", "Open the WireMesh dashboard")
@@ -43,6 +45,7 @@ func onReady() {
 	login.Hide()
 
 	var last *client.DaemonStatus
+	opened := "" // login code we already opened the browser for
 	refresh := func() {
 		st, err := lc.Call("GET", "/status", nil)
 		if err != nil {
@@ -69,8 +72,12 @@ func onReady() {
 			connect.Hide()
 			disconnect.Show()
 		case client.StateNeedsLogin:
-			status.SetTitle("Login required: code " + st.LoginCode)
+			status.SetTitle("Log in in your browser: code " + st.LoginCode)
 			setIcon(color.RGBA{0xf5, 0x9e, 0x0b, 0xff})
+			if st.LoginCode != opened {
+				opened = st.LoginCode
+				openURL(st.LoginURL)
+			}
 			login.Show()
 			connect.Hide()
 			disconnect.Show()
@@ -89,7 +96,39 @@ func onReady() {
 			disconnect.Hide()
 		}
 	}
+	// connectTo asks for the server address when needed and starts the tunnel.
+	connectTo := func(ask bool) {
+		server := ""
+		if ask {
+			cur := ""
+			if last != nil {
+				cur = last.ServerURL
+			}
+			s, ok := askServer(cur)
+			if !ok {
+				return
+			}
+			server = s
+			// Switching servers: leave the old one (forgets this device there).
+			if last != nil && last.ServerURL != "" && !sameServer(last.ServerURL, s) {
+				_, _ = lc.Call("POST", "/logout", nil)
+			} else {
+				_, _ = lc.Call("POST", "/down", nil) // restart with the address as typed
+			}
+			status.SetTitle("Connecting to " + s + "…")
+		}
+		if _, err := lc.Call("POST", "/up", client.UpRequest{ServerURL: server}); err != nil {
+			status.SetTitle("Connect failed: " + err.Error())
+			return
+		}
+		refresh()
+	}
+
 	refresh()
+	// First run: no server configured yet, so ask right away.
+	if last != nil && last.ServerURL == "" && last.State == client.StateStopped {
+		go connectTo(true)
+	}
 	tick := time.NewTicker(3 * time.Second)
 	go func() {
 		for {
@@ -97,10 +136,9 @@ func onReady() {
 			case <-tick.C:
 				refresh()
 			case <-connect.ClickedCh:
-				if _, err := lc.Call("POST", "/up", client.UpRequest{}); err != nil {
-					status.SetTitle("Connect failed: " + err.Error() + " (first time: run `wiremesh up --server …`)")
-				}
-				refresh()
+				connectTo(last == nil || last.ServerURL == "")
+			case <-change.ClickedCh:
+				connectTo(true)
 			case <-disconnect.ClickedCh:
 				_, _ = lc.Call("POST", "/down", nil)
 				refresh()
@@ -118,6 +156,15 @@ func onReady() {
 			}
 		}
 	}()
+}
+
+// sameServer compares a stored URL with what the user typed ("1.2.3.4" vs "http://1.2.3.4").
+func sameServer(stored, typed string) bool {
+	typed = strings.TrimRight(strings.TrimSpace(typed), "/")
+	if strings.Contains(typed, "://") {
+		return stored == typed
+	}
+	return stored == "https://"+typed || stored == "http://"+typed
 }
 
 // openURL opens an http(s) URL in the default browser. Other schemes are

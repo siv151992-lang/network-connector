@@ -60,7 +60,14 @@ func LoadOrCreateState(path, serverURL string) (*State, error) {
 		return nil, fmt.Errorf("%s has no keys; delete it to re-enroll", path)
 	}
 	if serverURL != "" && st.ServerURL != serverURL {
-		return nil, fmt.Errorf("%s belongs to server %s, not %s; use another state file to join a different server", path, st.ServerURL, serverURL)
+		if st.Credential != "" {
+			return nil, fmt.Errorf("this device is joined to %s; log out first to join %s", st.ServerURL, serverURL)
+		}
+		// Not enrolled yet (e.g. a mistyped address): just switch servers.
+		st.ServerURL = serverURL
+		if err := st.Save(path); err != nil {
+			return nil, err
+		}
 	}
 	return &st, nil
 }
