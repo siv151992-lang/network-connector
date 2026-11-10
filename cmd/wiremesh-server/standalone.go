@@ -77,7 +77,7 @@ func runStandalone(args []string) error {
 	fs.StringVar(&o.Web, "web", filepath.Join(exeDir(), "web"), "dashboard files")
 	fs.StringVar(&o.Postgres, "postgres", filepath.Join(exeDir(), "postgres-"+runtime.GOOS+"-"+runtime.GOARCH+".txz"), "bundled PostgreSQL archive")
 	fs.StringVar(&o.STUNAddr, "stun-addr", ":3478", "STUN listen address (UDP)")
-	fs.UintVar(&o.PGPort, "pg-port", 54329, "embedded PostgreSQL port (localhost only)")
+	fs.UintVar(&o.PGPort, "pg-port", 0, "embedded PostgreSQL port on 127.0.0.1 (0 = pick a free one)")
 	sub := ""
 	if len(args) > 0 && (args[0] == "install" || args[0] == "uninstall") {
 		sub, args = args[0], args[1:]
@@ -154,7 +154,8 @@ func standalone(ctx context.Context, o standaloneOpts) (err error) {
 	}
 	defer logFile.Close()
 	logOut := io.MultiWriter(os.Stderr, logFile)
-	fmt.Fprintf(logFile, "%s starting WireMesh standalone server\n", time.Now().Format(time.RFC3339))
+	step := func(msg string) { fmt.Fprintf(logOut, "%s %s\n", time.Now().Format(time.RFC3339), msg) }
+	step("starting WireMesh standalone server (data: " + o.Data + ")")
 	// A Windows service has no console: make sure a fatal error lands in the log.
 	defer func() {
 		if err != nil {
@@ -171,6 +172,12 @@ func standalone(ctx context.Context, o standaloneOpts) (err error) {
 		return err
 	}
 
+	if o.PGPort == 0 {
+		if o.PGPort, err = freePort(); err != nil {
+			return err
+		}
+	}
+	step(fmt.Sprintf("starting database on 127.0.0.1:%d (first start takes a minute)", o.PGPort))
 	pg, err := startEmbeddedPostgres(o, dbPass, logOut)
 	if err != nil {
 		return err
@@ -211,6 +218,7 @@ func standalone(ctx context.Context, o standaloneOpts) (err error) {
 	setDefault("WIREMESH_RELAY_URLS", pub+"/relay")
 	setDefault("WIREMESH_LOG_FORMAT", "text")
 
+	step("database ready; starting server at " + pub)
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("invalid configuration:\n%w", err)
@@ -228,9 +236,11 @@ func standalone(ctx context.Context, o standaloneOpts) (err error) {
 
 	stunSrv := &stun.Server{Log: log}
 	if err := stunSrv.Listen(o.STUNAddr); err != nil {
-		return fmt.Errorf("STUN on %s: %w", o.STUNAddr, err)
+		// Not fatal: on a LAN devices still connect directly or via the relay.
+		log.Warn("STUN disabled: port in use?", "addr", o.STUNAddr, "error", err)
+	} else {
+		go func() { _ = stunSrv.Serve(ctx) }()
 	}
-	go func() { _ = stunSrv.Serve(ctx) }()
 
 	sk, err := relayproto.SigningKey(cfg.SecretKey)
 	if err != nil {
@@ -306,6 +316,16 @@ func startEmbeddedPostgres(o standaloneOpts, password string, logOut io.Writer) 
 		return nil, fmt.Errorf("start embedded PostgreSQL: %w", err)
 	}
 	return pg, nil
+}
+
+// freePort asks the OS for an unused TCP port on 127.0.0.1.
+func freePort() (uint, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	return uint(l.Addr().(*net.TCPAddr).Port), nil
 }
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }

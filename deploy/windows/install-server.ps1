@@ -11,6 +11,10 @@ if (Get-Service -Name WireMeshServer -ErrorAction SilentlyContinue) {
     Stop-Service -Name WireMeshServer -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
 }
+# A database left running by an earlier failed start would block the new one.
+Get-Process postgres -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -like "*WireMesh Server*" } |
+    Stop-Process -Force -ErrorAction SilentlyContinue
 
 Write-Host "Copying files to $dst ..."
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
@@ -32,7 +36,8 @@ for ($i = 0; $i -lt 90; $i++) {
 $ip = (Find-NetRoute -RemoteIPAddress 192.0.2.1 -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress
 if (-not $ip) { $ip = "localhost" }
 if (-not $ready) {
-    Write-Host "The server did not answer yet. Log: $env:ProgramData\WireMesh Server\server.log" -ForegroundColor Yellow
+    Write-Host "The server did not start. Last lines of its log:" -ForegroundColor Yellow
+    Get-Content "$env:ProgramData\WireMesh Server\server.log" -Tail 15 -ErrorAction SilentlyContinue
     exit 1
 }
 Write-Host ""
