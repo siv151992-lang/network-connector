@@ -153,7 +153,7 @@ func standalone(ctx context.Context, o standaloneOpts) (err error) {
 		return err
 	}
 	defer logFile.Close()
-	logOut := io.MultiWriter(os.Stderr, logFile)
+	logOut := io.MultiWriter(bestEffort{os.Stderr}, logFile)
 	step := func(msg string) { fmt.Fprintf(logOut, "%s %s\n", time.Now().Format(time.RFC3339), msg) }
 	step("starting WireMesh standalone server (data: " + o.Data + ")")
 	// A Windows service has no console: make sure a fatal error lands in the log.
@@ -316,6 +316,15 @@ func startEmbeddedPostgres(o standaloneOpts, password string, logOut io.Writer) 
 		return nil, fmt.Errorf("start embedded PostgreSQL: %w", err)
 	}
 	return pg, nil
+}
+
+// bestEffort ignores write errors: a Windows service has no valid stderr,
+// and a failed console write must not fail the log file write next to it.
+type bestEffort struct{ w io.Writer }
+
+func (b bestEffort) Write(p []byte) (int, error) {
+	_, _ = b.w.Write(p)
+	return len(p), nil
 }
 
 // freePort asks the OS for an unused TCP port on 127.0.0.1.
